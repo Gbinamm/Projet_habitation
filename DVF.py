@@ -72,5 +72,3 @@ def load_full_dvf_to_duckdb():
 
 if __name__ == "__main__":
     load_full_dvf_to_duckdb()
-
-    #sfd
