@@ -1,0 +1,12 @@
+# Bases de données
+*.duckdb
+
+# Environnement virtuel Python
+venv/
+__pycache__/
+
+# Dossiers de données brutes ou extraites
+data/
+*.zip
+*.csv
+*.txt
