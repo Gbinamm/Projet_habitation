@@ -5,10 +5,15 @@ import shutil
 import os
 import tempfile
 import json
+import pandas as pd
 
 # --- Configuration ---
 DVF_URL = "https://www.data.gouv.fr/api/1/datasets/r/902db087-b0eb-4cbb-a968-0b499bde5bc4"
 DB_FILE = "real_estate_bi.duckdb"
+
+# Configuration Géocodage
+API_BAN_URL = "https://api-adresse.data.gouv.fr/search/"
+LIMITE_LIGNES = 1000
 
 # URLs des zones PEB de la DGAC
 PEB_ZONE_URLS = {
@@ -110,6 +115,82 @@ def load_peb_to_duckdb(con):
     for zone, count in counts:
         print(f"      - Zone {zone} : {count} zones insérées.")
 
+
+def lier_dvf_et_peb(con):
+    """Géolocalise un échantillon de DVF et fait la jointure avec le PEB"""
+    print("\n--- Croisement DVF et PEB (Géocodage via BAN) ---")
+    
+    print(f"1. Extraction de {LIMITE_LIGNES} adresses complètes depuis DVF...")
+    query_dvf = f"""
+    SELECT 
+        "Valeur fonciere",
+        "Type local",
+        CONCAT_WS(' ', "No voie", "Type de voie", "Voie", "Code departement") AS adresse_recherche
+    FROM dvf_raw
+    WHERE "Voie" IS NOT NULL
+    LIMIT {LIMITE_LIGNES}
+    """
+    df_dvf = con.execute(query_dvf).df()
+
+    print("2. Appel à l'API Adresse (Cette étape prend quelques secondes)...")
+    resultats = []
+    
+    for index, row in df_dvf.iterrows():
+        adresse = row['adresse_recherche']
+        reponse = requests.get(API_BAN_URL, params={"q": adresse, "limit": 1})
+        
+        lat, lon = None, None
+        if reponse.status_code == 200:
+            data = reponse.json()
+            if data['features']:
+                coords = data['features'][0]['geometry']['coordinates']
+                lon, lat = coords[0], coords[1]
+        
+        resultats.append({
+            "Valeur fonciere": row['Valeur fonciere'],
+            "Type local": row['Type local'],
+            "adresse": adresse,
+            "longitude": lon,
+            "latitude": lat
+        })
+    
+    df_gps = pd.DataFrame(resultats)
+    df_gps = df_gps.dropna(subset=['longitude', 'latitude'])
+    
+    print(f"   -> {len(df_gps)} adresses géolocalisées avec succès !")
+
+    print("3. Création de la table temporaire 'dvf_echantillon_gps'...")
+    con.execute("DROP TABLE IF EXISTS dvf_echantillon_gps;")
+    con.execute("CREATE TABLE dvf_echantillon_gps AS SELECT * FROM df_gps;")
+
+    print("4. EXÉCUTION DE LA JOINTURE SPATIALE 🚀...")
+    # On active spatial au cas où l'étape PEB aurait été sautée
+    con.execute("INSTALL spatial; LOAD spatial;")
+    
+    query_jointure = """
+    SELECT 
+        d."Valeur fonciere",
+        d."Type local",
+        d.adresse,
+        p.peb_zone
+    FROM dvf_echantillon_gps d
+    JOIN peb_raw p 
+      ON ST_Contains(p.geom, ST_Point(d.longitude, d.latitude));
+    """
+    
+    df_final = con.execute(query_jointure).df()
+    
+    print("\n==================================================")
+    print("      RÉSULTAT DU CROISEMENT IMMOBILIER/BRUIT     ")
+    print("==================================================")
+    if len(df_final) > 0:
+        print(df_final.to_string(index=False))
+    else:
+        print("Aucun bien de cet échantillon n'est situé dans une zone")
+        print("de bruit d'aéroport (Zones B, C ou D).")
+    print("==================================================")
+
+
 if __name__ == "__main__":
     print("Ouverture de la base de données DuckDB...")
     con = duckdb.connect(DB_FILE)
@@ -118,5 +199,8 @@ if __name__ == "__main__":
     load_full_dvf_to_duckdb(con)
     load_peb_to_duckdb(con)
     
+    # Jointure (Stage 2)
+    lier_dvf_et_peb(con)
+    
     con.close()
-    print("\nScript d'ingestion terminé avec succès !")
+    print("\nScript de pipeline terminé avec succès !")
