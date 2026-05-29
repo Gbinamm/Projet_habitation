@@ -9,7 +9,7 @@ import pandas as pd
 
 # --- Configuration 
 DVF_URL = "https://www.data.gouv.fr/api/1/datasets/r/902db087-b0eb-4cbb-a968-0b499bde5bc4"
-DB_FILE = "real_estate_bi.duckdb"
+DB_FILE = "immo_et_bruit.duckdb"
 
 # Configuration Géocodage
 API_BAN_URL = "https://api-adresse.data.gouv.fr/search/"
