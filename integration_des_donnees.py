@@ -1,206 +1,313 @@
+"""
+integration_des_donnees.py
+-----------------------------------------------------------------------------
+Intégration DVF + PEB dans la base DuckDB.
+
+Changements par rapport à la version précédente :
+  - Source DVF : on passe sur la DVF GÉOLOCALISÉE d'Etalab.
+    Avantages : longitude/latitude déjà incluses (plus besoin de la BAN !),
+    encodage UTF-8 propre, types corrects, 1 fichier par département par année.
+    → On peut traiter TOUTES les adresses, pas seulement 1000.
+  - Filtrage Loire-Atlantique (dépt 44) configurable
+  - Déduplication par id_mutation (DVF a plusieurs lignes par vente à cause
+    des parcelles cadastrales) — on garde une ligne par mutation
+  - Filtres qualité documentés (prix > 1000€, surface > 9m², etc.)
+  - PEB : ajout du LEFT JOIN pour garder les biens hors zone (sinon on perd
+    99% de l'échantillon dans toute analyse comparative)
+  - Téléchargement robuste aux 404 (années non disponibles ignorées)
+"""
+from __future__ import annotations
 import duckdb
 import requests
-import zipfile
-import shutil
+import json
 import os
 import tempfile
-import json
-import pandas as pd
+from pathlib import Path
 
-# --- Configuration 
-DVF_URL = "https://www.data.gouv.fr/api/1/datasets/r/902db087-b0eb-4cbb-a968-0b499bde5bc4"
+# ============================================================================
+# Configuration
+# ============================================================================
 DB_FILE = "immo_et_bruit.duckdb"
 
-# Configuration Géocodage
-API_BAN_URL = "https://api-adresse.data.gouv.fr/search/"
-LIMITE_LIGNES = 1000
+# Périmètre : codes département à traiter (Loire-Atlantique = 44)
+DEPARTEMENTS = ["44"]
 
-# URLs des zones PEB de la DGAC
+# Années à charger. La DVF Etalab garde une fenêtre glissante de 5 ans —
+# au 29 mai 2026, seules 2021 → 2025 sont disponibles.
+# Le 404 est de toute façon géré silencieusement, donc tu peux laisser
+# 2020 ici si tu veux : il sera ignoré poliment.
+ANNEES = [2021, 2022, 2023, 2024, 2025]
+
+# URL DVF géolocalisée Etalab — 1 fichier .csv.gz par année par département
+DVF_URL_TEMPLATE = (
+    "https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/departements/{dept}.csv.gz"
+)
+
+# URLs des zones PEB de la DGAC (Plan d'Exposition au Bruit)
+# Note : zone A non incluse ici car pas dans le jeu de données initial.
+# Si tu trouves l'URL de zone A sur data.gouv.fr, ajoute-la simplement.
 PEB_ZONE_URLS = {
     "B": "https://www.data.gouv.fr/api/1/datasets/r/ea77a7b5-0298-49ed-b3ff-caae3b15d022",
     "C": "https://www.data.gouv.fr/api/1/datasets/r/a7f30166-3319-428e-a08e-700e3c0a3755",
     "D": "https://www.data.gouv.fr/api/1/datasets/r/78087339-b725-4825-a9f7-8d4ef92b2963",
 }
 
-def load_full_dvf_to_duckdb(con):
-    """Charge les données DVF dans DuckDB"""
-    print("\n--- Intégration des données DVF (Transactions) ---")
-    table_exists = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'dvf_raw'").fetchone()[0]
-    if table_exists > 0:
+
+# ============================================================================
+# 1. DVF — téléchargement + chargement
+# ============================================================================
+def load_dvf(con, departements: list[str], annees: list[int]) -> None:
+    """Télécharge et charge la DVF géolocalisée pour les départements et années
+    demandés. Dédoublonne par id_mutation."""
+    print("\n--- Intégration DVF géolocalisée ---")
+
+    if _table_exists(con, "dvf_raw"):
         print("1. La table 'dvf_raw' existe déjà, on passe l'intégration DVF.")
         return
 
-    temp_dir = tempfile.gettempdir()
-    zip_path = os.path.join(temp_dir, "archive_dvf.zip")
-    txt_path = os.path.join(temp_dir, "valeurs_foncieres.txt")
+    raw_dir = Path("raw_dvf")
+    raw_dir.mkdir(exist_ok=True)
 
-    print("1. Téléchargement de l'archive DVF...")
-    with requests.get(DVF_URL, stream=True) as r:
-        r.raise_for_status()
-        with open(zip_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-                
-    print("2. Extraction du fichier texte...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        fichiers = zip_ref.namelist()
-        with zip_ref.open(fichiers[0]) as source, open(txt_path, "wb") as cible:
-            shutil.copyfileobj(source, cible)
+    # ------------------------------------------------------------------------
+    # Étape 1 : téléchargement de chaque (année, département)
+    # ------------------------------------------------------------------------
+    fichiers = []
+    for dept in departements:
+        for year in annees:
+            url = DVF_URL_TEMPLATE.format(year=year, dept=dept)
+            dest = raw_dir / f"dvf_{dept}_{year}.csv.gz"
 
-    print("3. Intégration de TOUTES les données DVF de France...")
-    safe_txt_path = txt_path.replace('\\', '/')
-    
-    query = f"""
+            if dest.exists() and dest.stat().st_size > 0:
+                print(f"   [cache] {dest.name}")
+                fichiers.append(dest)
+                continue
+
+            print(f"   Téléchargement {dest.name}...")
+            try:
+                with requests.get(url, stream=True, timeout=120) as r:
+                    r.raise_for_status()
+                    with open(dest, "wb") as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
+                print(f"     -> {dest.stat().st_size / 1e6:.1f} Mo")
+                fichiers.append(dest)
+            except requests.HTTPError as e:
+                if e.response.status_code == 404:
+                    # Année plus disponible sur Etalab (fenêtre glissante de 5 ans)
+                    print(f"     -> 404 ignoré (année non disponible sur Etalab)")
+                    dest.unlink(missing_ok=True)
+                    continue
+                raise  # autres erreurs HTTP : on relève
+
+    if not fichiers:
+        print("ERREUR : aucun fichier DVF n'a pu être téléchargé.")
+        return
+
+    # ------------------------------------------------------------------------
+    # Étape 2 : chargement DuckDB avec dédoublonnage par id_mutation
+    # ------------------------------------------------------------------------
+    # DVF a plusieurs lignes par mutation (une par parcelle). On agrège pour
+    # avoir 1 ligne = 1 vente. On garde aussi tous les filtres qualité ici
+    # pour ne pas se retrouver avec des valeurs absurdes plus tard.
+    print("2. Création de la table 'dvf_raw' avec dédoublonnage...")
+    glob_pattern = str(raw_dir / "dvf_*.csv.gz")
+
+    con.execute(f"""
     CREATE TABLE dvf_raw AS
-    SELECT * FROM read_csv_auto(
-        '{safe_txt_path}',
-        delim='|',
-        header=True,
-        decimal_separator=',', 
-        ignore_errors=True,
-        all_varchar=True,
-        null_padding=True,
-        strict_mode=False
-    );
-    """
-    con.execute(query)
+    WITH brut AS (
+        SELECT *
+        FROM read_csv_auto('{glob_pattern}', union_by_name=true, ignore_errors=true)
+    ),
+    -- Filtres qualité explicites (documentés et défendables) :
+    --   - Ventes uniquement (pas adjudications, échanges, etc.)
+    --   - Résidentiel uniquement (Maison ou Appartement)
+    --   - Valeur foncière >= 1000€ (exclut les 1€ familiaux)
+    --   - Surface bâtie cohérente (9 à 1000 m²)
+    --   - Coordonnées GPS présentes
+    filtre AS (
+        SELECT *
+        FROM brut
+        WHERE nature_mutation IN ('Vente', 'Vente en l''état futur')
+          AND type_local IN ('Maison', 'Appartement')
+          AND valeur_fonciere >= 1000
+          AND surface_reelle_bati BETWEEN 9 AND 1000
+          AND longitude IS NOT NULL
+          AND latitude IS NOT NULL
+    )
+    -- Dédoublonnage : 1 ligne par mutation (somme des surfaces des parcelles,
+    -- max de la valeur foncière, moyenne des coordonnées GPS)
+    SELECT
+        id_mutation,
+        ANY_VALUE(date_mutation)                 AS date_mutation,
+        ANY_VALUE(nature_mutation)               AS nature_mutation,
+        MAX(valeur_fonciere)                     AS valeur_fonciere,
+        ANY_VALUE(type_local)                    AS type_local,
+        SUM(surface_reelle_bati)                 AS surface_reelle_bati,
+        MAX(nombre_pieces_principales)           AS nombre_pieces_principales,
+        SUM(COALESCE(surface_terrain, 0))        AS surface_terrain,
+        ANY_VALUE(code_commune)                  AS code_commune,
+        ANY_VALUE(nom_commune)                   AS nom_commune,
+        ANY_VALUE(code_departement)              AS code_departement,
+        ANY_VALUE(adresse_numero) || ' ' ||
+            COALESCE(ANY_VALUE(adresse_suffixe), '') || ' ' ||
+            COALESCE(ANY_VALUE(adresse_nom_voie), '') AS adresse,
+        AVG(longitude)                           AS longitude,
+        AVG(latitude)                            AS latitude,
+        -- Prix au m² calculé directement
+        ROUND(MAX(valeur_fonciere) / SUM(surface_reelle_bati), 0) AS prix_m2
+    FROM filtre
+    GROUP BY id_mutation
+    """)
 
-    if os.path.exists(zip_path): os.remove(zip_path)
-    if os.path.exists(txt_path): os.remove(txt_path)
-    print("   -> Intégration DVF terminée.")
+    # ------------------------------------------------------------------------
+    # Étape 3 : filtre outliers (prix au m² P1-P99 par type de bien)
+    # ------------------------------------------------------------------------
+    # On retire les 1% extrêmes par type (Maison/Appartement) pour éviter que
+    # les valeurs aberrantes biaisent les analyses statistiques.
+    print("3. Filtrage des outliers de prix/m² (P1-P99 par type de bien)...")
+    con.execute("""
+    CREATE OR REPLACE TABLE dvf_raw AS
+    WITH bornes AS (
+        SELECT
+            type_local,
+            QUANTILE_CONT(prix_m2, 0.01) AS p1,
+            QUANTILE_CONT(prix_m2, 0.99) AS p99
+        FROM dvf_raw
+        GROUP BY type_local
+    )
+    SELECT d.*
+    FROM dvf_raw d
+    JOIN bornes b USING (type_local)
+    WHERE d.prix_m2 BETWEEN b.p1 AND b.p99
+    """)
 
-def load_peb_to_duckdb(con):
-    """Télécharge les zones PEB, les fusionne et les intègre via l'extension spatiale"""
-    print("\n--- Intégration des données PEB (Bruit DGAC) ---")
-    table_exists = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'peb_raw'").fetchone()[0]
-    if table_exists > 0:
-        print("1. La table 'peb_raw' existe déjà, on passe l'intégration PEB.")
+    # ------------------------------------------------------------------------
+    # Résumé
+    # ------------------------------------------------------------------------
+    total = con.execute("SELECT COUNT(*) FROM dvf_raw").fetchone()[0]
+    print(f"\n   -> {total:,} mutations résidentielles dédoublonnées dans 'dvf_raw'")
+
+    repartition = con.execute("""
+        SELECT
+            code_departement,
+            type_local,
+            COUNT(*) AS n,
+            ROUND(MEDIAN(prix_m2)) AS prix_m2_median
+        FROM dvf_raw
+        GROUP BY code_departement, type_local
+        ORDER BY code_departement, type_local
+    """).fetchall()
+    for dept, type_l, n, prix in repartition:
+        print(f"      dept {dept}  {type_l:<12s} {n:>7,} ventes  | médiane {prix:,.0f} €/m²")
+
+
+# ============================================================================
+# 2. PEB — zones de bruit DGAC
+# ============================================================================
+def load_peb(con) -> None:
+    """Télécharge et fusionne les zones PEB B/C/D dans une table spatiale."""
+    print("\n--- Intégration PEB (zones de bruit aéroport) ---")
+
+    if _table_exists(con, "peb_raw"):
+        print("1. La table 'peb_raw' existe déjà, on passe.")
         return
 
     print("1. Activation de l'extension spatiale...")
     con.execute("INSTALL spatial; LOAD spatial;")
 
+    # Téléchargement et fusion des zones B/C/D en un seul GeoJSON
     all_features = []
-    
-    # Récupération et ajout du tag de zone pour chaque fichier
     for zone, url in PEB_ZONE_URLS.items():
-        print(f"2. Téléchargement de la zone {zone}...")
+        print(f"2. Téléchargement zone {zone}...")
         response = requests.get(url, timeout=60)
         response.raise_for_status()
-
         features = response.json().get("features", [])
         for feature in features:
-            if "properties" not in feature:
-                feature["properties"] = {}
+            feature.setdefault("properties", {})
             feature["properties"]["peb_zone"] = zone
-            
         all_features.extend(features)
-        print(f"   -> Zone {zone} : {len(features)} polygones récupérés.")
+        print(f"   -> Zone {zone} : {len(features)} polygones")
 
-    print("3. Fusion et création du GeoJSON temporaire...")
-    with tempfile.NamedTemporaryFile(suffix=".geojson", mode="w", delete=False) as f:
+    # Écriture GeoJSON temporaire puis lecture spatiale
+    with tempfile.NamedTemporaryFile(suffix=".geojson", mode="w",
+                                     delete=False, encoding="utf-8") as f:
         json.dump({"type": "FeatureCollection", "features": all_features}, f)
         temp_path = f.name
 
-    print("4. Intégration géospatiale dans 'peb_raw'...")
-    safe_temp_path = temp_path.replace('\\', '/')
-    con.execute(f"CREATE TABLE peb_raw AS SELECT * FROM ST_Read('{safe_temp_path}')")
-
-    # Nettoyage
+    safe_path = temp_path.replace("\\", "/")
+    con.execute(f"CREATE TABLE peb_raw AS SELECT * FROM ST_Read('{safe_path}')")
     os.unlink(temp_path)
 
-    # Vérification
-    counts = con.execute("SELECT peb_zone, COUNT(*) FROM peb_raw GROUP BY peb_zone ORDER BY peb_zone").fetchall()
-    print("   -> Bilan de l'intégration PEB :")
-    for zone, count in counts:
-        print(f"      - Zone {zone} : {count} zones insérées.")
+    bilan = con.execute("""
+        SELECT peb_zone, COUNT(*) FROM peb_raw GROUP BY peb_zone ORDER BY peb_zone
+    """).fetchall()
+    print("3. Bilan PEB :")
+    for zone, n in bilan:
+        print(f"      Zone {zone} : {n} polygones")
 
 
-def lier_dvf_et_peb(con):
-    """Géolocalise un échantillon de DVF et fait la jointure avec le PEB"""
-    print("\n--- Croisement DVF et PEB (Géocodage via BAN) ---")
-    
-    print(f"1. Extraction de {LIMITE_LIGNES} adresses complètes depuis DVF...")
-    query_dvf = f"""
-    SELECT 
-        "Valeur fonciere",
-        "Type local",
-        CONCAT_WS(' ', "No voie", "Type de voie", "Voie", "Code departement") AS adresse_recherche
-    FROM dvf_raw
-    WHERE "Voie" IS NOT NULL
-    LIMIT {LIMITE_LIGNES}
-    """
-    df_dvf = con.execute(query_dvf).df()
+# ============================================================================
+# 3. Jointure DVF ↔ PEB
+# ============================================================================
+def lier_dvf_peb(con) -> None:
+    """Crée 'dvf_avec_peb' : DVF + colonne peb_zone (NULL si hors zone).
+    LEFT JOIN pour GARDER les biens hors PEB (essentiel pour comparer)."""
+    print("\n--- Jointure spatiale DVF ↔ PEB ---")
 
-    print("2. Appel à l'API Adresse (Cette étape prend quelques secondes)...")
-    resultats = []
-    
-    for index, row in df_dvf.iterrows():
-        adresse = row['adresse_recherche']
-        reponse = requests.get(API_BAN_URL, params={"q": adresse, "limit": 1})
-        
-        lat, lon = None, None
-        if reponse.status_code == 200:
-            data = reponse.json()
-            if data['features']:
-                coords = data['features'][0]['geometry']['coordinates']
-                lon, lat = coords[0], coords[1]
-        
-        resultats.append({
-            "Valeur fonciere": row['Valeur fonciere'],
-            "Type local": row['Type local'],
-            "adresse": adresse,
-            "longitude": lon,
-            "latitude": lat
-        })
-    
-    df_gps = pd.DataFrame(resultats)
-    df_gps = df_gps.dropna(subset=['longitude', 'latitude'])
-    
-    print(f"   -> {len(df_gps)} adresses géolocalisées avec succès !")
+    # Garde-fou : vérifie que dvf_raw a bien le nouveau schéma
+    cols = {r[0] for r in con.execute("DESCRIBE dvf_raw").fetchall()}
+    if "longitude" not in cols or "id_mutation" not in cols:
+        print("ERREUR : 'dvf_raw' n'a pas le bon schéma (ancien script DGFiP brut ?).")
+        print("Supprime la base et relance : Remove-Item immo_et_bruit.duckdb")
+        return
 
-    print("3. Création de la table temporaire 'dvf_echantillon_gps'...")
-    con.execute("DROP TABLE IF EXISTS dvf_echantillon_gps;")
-    con.execute("CREATE TABLE dvf_echantillon_gps AS SELECT * FROM df_gps;")
-
-    print("4. EXÉCUTION DE LA JOINTURE SPATIALE 🚀...")
-    # On active spatial au cas où l'étape PEB aurait été sautée
     con.execute("INSTALL spatial; LOAD spatial;")
-    
-    query_jointure = """
-    SELECT 
-        d."Valeur fonciere",
-        d."Type local",
-        d.adresse,
+    con.execute("DROP TABLE IF EXISTS dvf_avec_peb;")
+
+    con.execute("""
+    CREATE TABLE dvf_avec_peb AS
+    SELECT
+        d.*,
         p.peb_zone
-    FROM dvf_echantillon_gps d
-    JOIN peb_raw p 
-      ON ST_Contains(p.geom, ST_Point(d.longitude, d.latitude));
-    """
-    
-    df_final = con.execute(query_jointure).df()
-    
-    print("\n==================================================")
-    print("      RÉSULTAT DU CROISEMENT IMMOBILIER/BRUIT     ")
-    print("==================================================")
-    if len(df_final) > 0:
-        print(df_final.to_string(index=False))
-    else:
-        print("Aucun bien de cet échantillon n'est situé dans une zone")
-        print("de bruit d'aéroport (Zones B, C ou D).")
-    print("==================================================")
+    FROM dvf_raw d
+    LEFT JOIN peb_raw p
+      ON ST_Contains(p.geom, ST_Point(d.longitude, d.latitude))
+    """)
+
+    bilan = con.execute("""
+        SELECT COALESCE(peb_zone, 'Hors PEB') AS zone, COUNT(*) AS n
+        FROM dvf_avec_peb GROUP BY 1 ORDER BY 1
+    """).fetchall()
+    print("   Bilan jointure DVF ↔ PEB :")
+    for zone, n in bilan:
+        print(f"      {zone:<10s} {n:>7,} biens")
 
 
+# ============================================================================
+# Helpers
+# ============================================================================
+def _table_exists(con, name: str) -> bool:
+    return con.execute(f"""
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_name = '{name}'
+    """).fetchone()[0] > 0
+
+
+# ============================================================================
+# Main
+# ============================================================================
 if __name__ == "__main__":
-    print("Ouverture de la base de données DuckDB...")
+    print("=" * 60)
+    print("  Pipeline DVF + PEB → DuckDB")
+    print("=" * 60)
+    print(f"Base         : {DB_FILE}")
+    print(f"Départements : {DEPARTEMENTS}")
+    print(f"Années       : {ANNEES}")
+
     con = duckdb.connect(DB_FILE)
-    
-    # Ingestions (Stage 1)
-    load_full_dvf_to_duckdb(con)
-    load_peb_to_duckdb(con)
-    
-    # Jointure (Stage 2)
-    lier_dvf_et_peb(con)
-    
+    load_dvf(con, DEPARTEMENTS, ANNEES)
+    load_peb(con)
+    lier_dvf_peb(con)
     con.close()
-    print("\nScript de pipeline terminé avec succès !")
+
+    print("\nPipeline DVF + PEB terminé.")
