@@ -1,70 +1,81 @@
+"""
+integration_transport.py
+-----------------------------------------------------------------------------
+Intégration des arrêts de transport en commun depuis les fichiers GTFS
+référencés sur le Point d'Accès National (PAN) transport.data.gouv.fr.
+
+FILTRE : on garde TRAM, MÉTRO, TRAIN et BUS.
+  route_type GTFS :
+    0 = Tram
+    1 = Métro (Subway)
+    2 = Rail (TER, TGV, RER, Transilien...)
+    3 = Bus               <- CONSERVÉ
+    4 = Ferry             <- ignoré
+    5 = Cable tram        <- ignoré
+    6 = Aerial lift       <- ignoré
+    7 = Funicular         <- ignoré
+
+Source de l'info : routes.txt + trips.txt + stop_times.txt + stops.txt dans
+chaque archive GTFS. C'est plus lourd que de juste lire stops.txt, mais c'est
+la seule façon fiable de filtrer par mode de transport.
+
+Optimisation : on saute entièrement les GTFS qui n'ont AUCUNE route de type
+0/1/2/3.
+"""
+from __future__ import annotations
 import duckdb
 import requests
 import zipfile
-import shutil
-import os
-import tempfile
 import io
 import pandas as pd
+import sys
 
-# --- Configuration ---
+# ============================================================================
+# Configuration
+# ============================================================================
 DB_FILE = "immo_et_bruit.duckdb"
 
-# API du Point d'Accès National (retourne la liste complète des datasets)
+# API du Point d'Accès National (catalogue des datasets de transport)
 PAN_API_URL = "https://transport.data.gouv.fr/api/datasets"
 
-# Jeu de données "Arrêts de transport en France" sur transport.data.gouv.fr
-# URL directe vérifiée le 29/05/2026 — resource id 81333
-ARRETS_CSV_URL = "https://transport.data.gouv.fr/resources/81333/download"
+# Types de transport à conserver — TRAM, METRO, RAIL (= train), BUS
+ROUTE_TYPES_VOULUS = {0, 1, 2, 3}
 
-# Types de transport à conserver (laisser [] pour tout garder)
-# Valeurs possibles : 'metro', 'bus', 'tram', 'rail', 'ferry', 'funicular'
-MODES_TRANSPORT = []
+# Limite de datasets GTFS à traiter (None = tous, ex: 20 pour tester)
+LIMITE_DATASETS_GTFS = None
 
-# Limite de datasets GTFS à traiter (None = tous, ex: 5 pour tester)
-LIMITE_DATASETS_GTFS = 5
+# Timeout pour le téléchargement de chaque GTFS (certains sont gros)
+GTFS_TIMEOUT_S = 180
 
 
-def get_pan_catalogue(con):
-    """
-    Récupère la liste complète des datasets depuis l'API PAN
-    et la stocke dans DuckDB pour référence.
-    L'API retourne directement un tableau JSON sans pagination.
-    """
-    print("\n--- Récupération du catalogue via l'API PAN ---")
+# ============================================================================
+# 1. Catalogue PAN
+# ============================================================================
+def get_pan_catalogue(con) -> None:
+    """Récupère la liste des datasets transport publiés sur le PAN."""
+    print("\n--- Catalogue PAN (transport.data.gouv.fr) ---")
 
-    table_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'transport_catalogue'"
-    ).fetchone()[0]
-
-    if table_exists > 0:
+    if _table_exists(con, "transport_catalogue"):
         print("1. La table 'transport_catalogue' existe déjà, on passe.")
         return
 
-    print("1. Appel à https://transport.data.gouv.fr/api/datasets ...")
+    print("1. Appel à l'API PAN...")
     response = requests.get(PAN_API_URL, timeout=60)
     response.raise_for_status()
-    datasets = response.json()  # liste de dicts
+    datasets = response.json()
+    print(f"   -> {len(datasets)} datasets récupérés")
 
-    print(f"   -> {len(datasets)} datasets récupérés depuis le PAN.")
-
+    # On extrait pour chaque dataset l'URL GTFS si elle existe
     rows = []
     for ds in datasets:
         resources = ds.get("resources", [])
-
-        # Récupère la première URL GTFS disponible
         gtfs_url = next(
             (r["url"] for r in resources
-             if r.get("format", "").upper() == "GTFS" and r.get("url") and r.get("is_available", True)),
+             if r.get("format", "").upper() == "GTFS"
+             and r.get("url")
+             and r.get("is_available", True)),
             None
         )
-        # Récupère la première URL GeoJSON disponible
-        geojson_url = next(
-            (r["url"] for r in resources
-             if r.get("format", "").upper() == "GEOJSON" and r.get("url") and r.get("is_available", True)),
-            None
-        )
-
         aom = ds.get("aom") or {}
         rows.append({
             "dataset_id":   ds.get("datagouv_id", ""),
@@ -73,105 +84,106 @@ def get_pan_catalogue(con):
             "type":         ds.get("type", ""),
             "region":       aom.get("region_name", ""),
             "aom_nom":      aom.get("nom", ""),
-            "licence":      ds.get("licence", ""),
-            "nb_resources": len(resources),
             "gtfs_url":     gtfs_url,
-            "geojson_url":  geojson_url,
             "updated":      ds.get("updated", ""),
         })
 
-    df_catalogue = pd.DataFrame(rows)
-    con.execute("CREATE TABLE transport_catalogue AS SELECT * FROM df_catalogue")
-
-    # Résumé par type
-    print("   -> Répartition par type de dataset :")
-    bilan = con.execute(
-        "SELECT type, COUNT(*) AS nb FROM transport_catalogue GROUP BY type ORDER BY nb DESC LIMIT 10"
-    ).fetchall()
-    for t, nb in bilan:
-        print(f"      {(t or 'N/A'):<35} {nb:>5}")
+    df = pd.DataFrame(rows)
+    con.execute("CREATE TABLE transport_catalogue AS SELECT * FROM df")
 
     gtfs_count = con.execute(
         "SELECT COUNT(*) FROM transport_catalogue WHERE gtfs_url IS NOT NULL"
     ).fetchone()[0]
-    print(f"   -> {gtfs_count} datasets avec une URL GTFS exploitable.")
+    print(f"2. {gtfs_count} datasets ont une URL GTFS exploitable.")
 
 
-def load_arrets_nationaux(con):
-    """
-    Télécharge le CSV national agrégé des arrêts de transport
-    depuis data.gouv.fr et l'intègre dans DuckDB.
-    Ce fichier regroupe tous les points d'arrêt issus des GTFS référencés sur le PAN.
-    """
-    print("\n--- Intégration des arrêts nationaux (CSV agrégé) ---")
+# ============================================================================
+# 2. Filtrage GTFS — extraction des stops tram/métro/train/bus
+# ============================================================================
+def _extraire_stops_filtres(gtfs_bytes: bytes) -> pd.DataFrame | None:
+    """Pour un GTFS donné (zip en bytes), retourne uniquement les stops
+    desservis par au moins une route de type 0/1/2/3. Retourne None si le GTFS
+    ne contient aucune route de ces types (on skip)."""
+    with zipfile.ZipFile(io.BytesIO(gtfs_bytes)) as z:
+        noms = z.namelist()
 
-    table_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'arrets_raw'"
-    ).fetchone()[0]
+        # Pré-check : pas de routes.txt -> GTFS invalide
+        if "routes.txt" not in noms:
+            return None
 
-    if table_exists > 0:
-        print("1. La table 'arrets_raw' existe déjà, on passe l'intégration.")
-        return
+        # ----- Étape 1 : routes filtrées par route_type -----
+        with z.open("routes.txt") as f:
+            routes = pd.read_csv(f, dtype=str)
+        routes["route_type"] = pd.to_numeric(routes["route_type"], errors="coerce")
+        routes_gardees = routes[routes["route_type"].isin(ROUTE_TYPES_VOULUS)]
+        if routes_gardees.empty:
+            # Aucun tram/métro/train/bus dans ce réseau -> on skip entièrement
+            return None
+        route_ids = set(routes_gardees["route_id"])
+        route_type_map = dict(zip(routes_gardees["route_id"],
+                                  routes_gardees["route_type"]))
 
-    print(f"1. Téléchargement du CSV des arrêts depuis :\n   {ARRETS_CSV_URL}")
-    temp_dir = tempfile.gettempdir()
-    csv_path = os.path.join(temp_dir, "arrets_transport_france.csv")
+        # ----- Étape 2 : trips correspondant à ces routes -----
+        if "trips.txt" not in noms:
+            return None
+        with z.open("trips.txt") as f:
+            trips = pd.read_csv(f, dtype=str, usecols=["route_id", "trip_id"])
+        trips_gardes = trips[trips["route_id"].isin(route_ids)]
+        if trips_gardes.empty:
+            return None
+        trip_to_route = dict(zip(trips_gardes["trip_id"], trips_gardes["route_id"]))
+        trip_ids = set(trip_to_route.keys())
 
-    with requests.get(ARRETS_CSV_URL, stream=True, timeout=180) as r:
-        r.raise_for_status()
-        with open(csv_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # ----- Étape 3 : stop_ids desservis par ces trips -----
+        # stop_times.txt peut être très gros, on charge juste 2 colonnes
+        if "stop_times.txt" not in noms:
+            return None
+        with z.open("stop_times.txt") as f:
+            stop_times = pd.read_csv(f, dtype=str, usecols=["trip_id", "stop_id"])
+        stop_times_gardes = stop_times[stop_times["trip_id"].isin(trip_ids)]
+        if stop_times_gardes.empty:
+            return None
 
-    file_size_mb = os.path.getsize(csv_path) / (1024 * 1024)
-    print(f"   -> Fichier téléchargé ({file_size_mb:.1f} Mo)")
+        # On garde le mapping stop_id -> ensemble des route_types desservis
+        stop_times_gardes = stop_times_gardes.merge(
+            pd.Series(trip_to_route, name="route_id").reset_index().rename(
+                columns={"index": "trip_id"}),
+            on="trip_id", how="left"
+        )
+        stop_times_gardes["route_type"] = stop_times_gardes["route_id"].map(route_type_map)
+        stop_modes = stop_times_gardes.groupby("stop_id")["route_type"].apply(
+            lambda s: ",".join(sorted({str(int(x)) for x in s if pd.notna(x)}))
+        ).to_dict()
+        stop_ids = set(stop_modes.keys())
 
-    print("2. Intégration dans DuckDB (table 'arrets_raw')...")
-    safe_csv_path = csv_path.replace("\\", "/")
+        # ----- Étape 4 : stops avec coordonnées + parent stations -----
+        if "stops.txt" not in noms:
+            return None
+        with z.open("stops.txt") as f:
+            stops = pd.read_csv(f, dtype=str)
 
-    con.execute(f"""
-    CREATE TABLE arrets_raw AS
-    SELECT * FROM read_csv_auto(
-        '{safe_csv_path}',
-        header=True,
-        ignore_errors=True,
-        null_padding=True
-    );
-    """)
+        stops_gardes = stops[stops["stop_id"].isin(stop_ids)].copy()
 
-    if os.path.exists(csv_path):
-        os.remove(csv_path)
+        # On rajoute les parent stations (gare centrale qui regroupe plusieurs quais)
+        if "parent_station" in stops_gardes.columns:
+            parent_ids = set(stops_gardes["parent_station"].dropna()) - {""}
+            parents = stops[stops["stop_id"].isin(parent_ids)]
+            stops_gardes = pd.concat([stops_gardes, parents], ignore_index=True)
+            stops_gardes = stops_gardes.drop_duplicates("stop_id")
 
-    count = con.execute("SELECT COUNT(*) FROM arrets_raw").fetchone()[0]
-    print(f"   -> {count:,} arrêts intégrés dans 'arrets_raw'.")
+        # On rattache le type de transport
+        stops_gardes["route_types"] = stops_gardes["stop_id"].map(stop_modes)
 
-    # Aperçu des colonnes disponibles
-    cols = con.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'arrets_raw'").fetchall()
-    print(f"   -> Colonnes : {', '.join(c[0] for c in cols)}")
+        return stops_gardes
 
 
-def load_stops_depuis_gtfs(con):
-    """
-    Parcourt les datasets GTFS du catalogue PAN, télécharge chaque zip,
-    extrait stops.txt et consolide tout dans la table 'stops_gtfs'.
-    C'est la source la plus riche : nom, coordonnées, type d'arrêt, accessibilité.
-    """
-    print("\n--- Intégration des stops depuis les fichiers GTFS ---")
+def load_stops_filtres(con) -> None:
+    """Boucle sur les GTFS du catalogue, garde uniquement les stops
+    tram/métro/train/bus et consolide dans 'transport_stops_raw'."""
+    print("\n--- Extraction des stops tram/métro/train/bus depuis les GTFS ---")
 
-    table_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'stops_gtfs'"
-    ).fetchone()[0]
-
-    if table_exists > 0:
-        print("1. La table 'stops_gtfs' existe déjà, on passe.")
-        return
-
-    catalogue_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'transport_catalogue'"
-    ).fetchone()[0]
-
-    if not catalogue_exists:
-        print("   -> Catalogue absent. Appelez d'abord get_pan_catalogue().")
+    if _table_exists(con, "transport_stops_raw"):
+        print("1. La table 'transport_stops_raw' existe déjà, on passe.")
         return
 
     df_cat = con.execute("""
@@ -184,144 +196,158 @@ def load_stops_depuis_gtfs(con):
         df_cat = df_cat.head(LIMITE_DATASETS_GTFS)
 
     total = len(df_cat)
-    print(f"1. {total} datasets GTFS à traiter (limite={LIMITE_DATASETS_GTFS or 'aucune'})...")
+    print(f"1. {total} GTFS à examiner...")
 
     all_stops = []
-    errors = 0
+    n_keep, n_skip, n_error = 0, 0, 0
 
     for idx, row in df_cat.iterrows():
         label = row["aom_nom"] or row["titre"] or row["dataset_id"]
+        label = label[:50]
         try:
-            resp = requests.get(row["gtfs_url"], timeout=60, stream=True)
+            resp = requests.get(row["gtfs_url"], timeout=GTFS_TIMEOUT_S)
             resp.raise_for_status()
 
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                if "stops.txt" not in z.namelist():
-                    print(f"   [{idx+1}/{total}] ⚠ {label} — pas de stops.txt dans le zip")
-                    continue
-                with z.open("stops.txt") as f:
-                    df_stops = pd.read_csv(f, dtype=str, on_bad_lines="skip")
-                    df_stops["dataset_id"]  = row["dataset_id"]
-                    df_stops["region"]      = row["region"]
-                    df_stops["aom_nom"]     = row["aom_nom"]
-                    all_stops.append(df_stops)
+            stops_df = _extraire_stops_filtres(resp.content)
+            if stops_df is None:
+                n_skip += 1
+                # On affiche seulement 1 ligne sur 20 pour pas spammer
+                if idx % 20 == 0:
+                    print(f"   [{idx+1}/{total}] skip  {label} (pas de rail/métro/tram/bus)")
+                continue
 
-            print(f"   [{idx+1}/{total}] ✓ {label} ({len(df_stops)} stops)")
+            stops_df["dataset_id"] = row["dataset_id"]
+            stops_df["region"]     = row["region"]
+            stops_df["aom_nom"]    = row["aom_nom"]
+            all_stops.append(stops_df)
+            n_keep += 1
+            print(f"   [{idx+1}/{total}] ✓ {label} ({len(stops_df)} stops)")
 
         except Exception as e:
-            errors += 1
-            print(f"   [{idx+1}/{total}] ✗ {label} — {e}")
+            n_error += 1
+            print(f"   [{idx+1}/{total}] ✗ {label} — {type(e).__name__}")
 
     if not all_stops:
-        print("   -> Aucun stop récupéré.")
+        print("   -> Aucun stop tram/métro/train/bus trouvé.")
         return
 
     df_all = pd.concat(all_stops, ignore_index=True)
 
-    # Colonnes standard GTFS stops.txt — on garantit leur présence
+    # Colonnes standard à garantir
     for col in ["stop_id", "stop_name", "stop_lat", "stop_lon",
-                "location_type", "wheelchair_boarding", "stop_code", "platform_code"]:
+                "location_type", "parent_station", "route_types"]:
         if col not in df_all.columns:
             df_all[col] = None
 
-    print(f"\n2. Consolidation : {len(df_all):,} stops au total ({errors} erreurs sur {total}).")
-    con.execute("CREATE TABLE stops_gtfs AS SELECT * FROM df_all")
+    print(f"\n2. Bilan : {n_keep} GTFS conservés, {n_skip} skipped (sans mode valide), "
+          f"{n_error} erreurs")
+    print(f"   {len(df_all):,} stops bruts")
 
-    # Répartition par région
-    print("   -> Top régions :")
-    bilan = con.execute("""
-        SELECT region, COUNT(*) AS nb_stops
-        FROM stops_gtfs
-        GROUP BY region
-        ORDER BY nb_stops DESC
-        LIMIT 10
-    """).fetchall()
-    for region, nb in bilan:
-        print(f"      {(region or 'N/A'):<35} {nb:>10,} stops")
+    con.execute("CREATE TABLE transport_stops_raw AS SELECT * FROM df_all")
 
 
-def creer_table_stops_clean(con):
+# ============================================================================
+# 3. Stops nettoyés et dédoublonnés
+# ============================================================================
+def creer_stops_clean(con) -> None:
+    """Crée 'transport_stops_clean' :
+      - filtre les coordonnées valides
+      - dédoublonne (un même stop peut apparaître dans plusieurs datasets)
+      - traduit route_type en libellé lisible
     """
-    Crée 'transport_stops_clean' : table finale nettoyée avec coordonnées
-    GPS valides, prête pour jointures spatiales avec dvf_raw et peb_raw.
-    """
-    print("\n--- Création de la table 'transport_stops_clean' ---")
+    print("\n--- Création de 'transport_stops_clean' ---")
 
-    table_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'transport_stops_clean'"
-    ).fetchone()[0]
-
-    if table_exists > 0:
-        print("   La table 'transport_stops_clean' existe déjà, on passe.")
+    if _table_exists(con, "transport_stops_clean"):
+        print("   La table existe déjà, on passe.")
         return
 
-    gtfs_exists = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'stops_gtfs'"
-    ).fetchone()[0]
-
-    if not gtfs_exists:
-        print("   -> Table 'stops_gtfs' absente, impossible de créer la vue.")
+    if not _table_exists(con, "transport_stops_raw"):
+        print("   -> transport_stops_raw absente, impossible de continuer.")
         return
 
     con.execute("""
     CREATE TABLE transport_stops_clean AS
+    WITH base AS (
+        SELECT
+            stop_id,
+            stop_name,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            route_types,
+            -- libellé lisible du ou des modes desservis
+            CASE
+                WHEN route_types LIKE '%2%' THEN 'Train'
+                WHEN route_types LIKE '%1%' THEN 'Métro'
+                WHEN route_types LIKE '%0%' THEN 'Tram'
+                WHEN route_types LIKE '%3%' THEN 'Bus'
+                ELSE 'Autre'
+            END AS mode_principal,
+            location_type,
+            dataset_id,
+            region,
+            aom_nom
+        FROM transport_stops_raw
+        WHERE TRY_CAST(stop_lat AS DOUBLE) IS NOT NULL
+          AND TRY_CAST(stop_lon AS DOUBLE) IS NOT NULL
+          AND TRY_CAST(stop_lat AS DOUBLE) BETWEEN 41 AND 52
+          AND TRY_CAST(stop_lon AS DOUBLE) BETWEEN -5 AND 10
+    )
+    -- Dédoublonnage : un même stop peut apparaître dans plusieurs datasets.
+    -- On groupe par (nom, latitude arrondie au 4ème chiffre, longitude idem)
+    -- pour identifier les stops identiques entre datasets.
     SELECT
-        stop_id,
+        ANY_VALUE(stop_id)        AS stop_id,
         stop_name,
-        TRY_CAST(stop_lat AS DOUBLE) AS latitude,
-        TRY_CAST(stop_lon AS DOUBLE) AS longitude,
-        location_type,
-        wheelchair_boarding,
-        dataset_id,
-        region,
-        aom_nom
-    FROM stops_gtfs
-    WHERE TRY_CAST(stop_lat AS DOUBLE) IS NOT NULL
-      AND TRY_CAST(stop_lon AS DOUBLE) IS NOT NULL
-      AND TRY_CAST(stop_lat AS DOUBLE) BETWEEN -90  AND 90
-      AND TRY_CAST(stop_lon AS DOUBLE) BETWEEN -180 AND 180
+        ROUND(latitude,  4)       AS latitude,
+        ROUND(longitude, 4)       AS longitude,
+        STRING_AGG(DISTINCT mode_principal, ', ') AS modes,
+        STRING_AGG(DISTINCT aom_nom, ', ')        AS reseaux
+    FROM base
+    GROUP BY stop_name, ROUND(latitude, 4), ROUND(longitude, 4)
     """)
 
-    count = con.execute("SELECT COUNT(*) FROM transport_stops_clean").fetchone()[0]
-    print(f"   -> {count:,} stops avec coordonnées valides dans 'transport_stops_clean'.")
-
-
-if __name__ == "__main__":
-    print("=" * 58)
-    print("   Pipeline Transport en Commun  →  DuckDB")
-    print("=" * 58)
-    print(f"Base de données : {DB_FILE}\n")
-
-    con = duckdb.connect(DB_FILE)
-
-    # Recrée le catalogue avec la bonne colonne 'dataset_id'
-    con.execute("DROP TABLE IF EXISTS transport_catalogue")
-
-    # Étape 1 — Catalogue PAN complet
-    get_pan_catalogue(con)
-
-    # Étape 2 — CSV national des arrêts (léger, ~quelques Mo)
-    load_arrets_nationaux(con)
-
-    # Étape 3 — Stops détaillés depuis chaque GTFS (long si LIMITE_DATASETS_GTFS=None)
-    load_stops_depuis_gtfs(con)
-
-    # Étape 4 — Table finale nettoyée
-    creer_table_stops_clean(con)
-
-    # Résumé
-    print("\n" + "=" * 58)
-    print("   RÉSUMÉ DES TABLES DANS LA BASE")
-    print("=" * 58)
-    tables = con.execute("""
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'main'
-        ORDER BY table_name
+    bilan = con.execute("""
+        SELECT modes, COUNT(*) AS n
+        FROM transport_stops_clean
+        GROUP BY modes ORDER BY n DESC
     """).fetchall()
-    for (t,) in tables:
-        count = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        print(f"   {t:<40} {count:>12,} lignes")
+    print("   Répartition par mode :")
+    for modes, n in bilan:
+        print(f"      {modes:<30s} {n:>6,} stops")
 
+
+# ============================================================================
+# Helpers
+# ============================================================================
+def _table_exists(con, name: str) -> bool:
+    return con.execute(f"""
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_name = '{name}'
+    """).fetchone()[0] > 0
+
+
+# ============================================================================
+# Main
+# ============================================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("  Pipeline Transport (tram/métro/train/bus) -> DuckDB")
+    print("=" * 60)
+
+    # Ajout du gestionnaire d'erreur DBeaver / Lock
+    try:
+        con = duckdb.connect(DB_FILE)
+    except duckdb.IOException as e:
+        if "utilisé par un autre processus" in str(e) or "already open" in str(e):
+            print("\n❌ ERREUR : La base de données est actuellement bloquée.")
+            print("💡 SOLUTION : Retourne dans DBeaver, fais un clic droit sur ta base et clique sur 'Déconnecter'. Relance ensuite le script.")
+            sys.exit(1)
+        else:
+            raise e
+            
+    get_pan_catalogue(con)
+    load_stops_filtres(con)
+    creer_stops_clean(con)
     con.close()
-    print("\nPipeline transport terminé avec succès !")
+
+    print("\nPipeline transport terminé.")
