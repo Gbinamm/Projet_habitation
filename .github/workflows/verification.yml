@@ -1,0 +1,32 @@
+name: Verification du code Python
+
+# Quand est-ce que ce robot doit s'activer ?
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest # Le robot utilise un serveur Linux
+
+    steps:
+    - name: Récupérer le code
+      uses: actions/checkout@v4
+
+    - name: Installer Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11" # Adapte si tu utilises une autre version
+
+    - name: Installer les dépendances
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8
+
+    - name: Vérifier les erreurs de syntaxe (Linting)
+      run: |
+        # Arrête le processus s'il y a des erreurs de syntaxe ou des variables non définies
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
