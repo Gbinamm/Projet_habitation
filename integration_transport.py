@@ -8,7 +8,7 @@ import io
 import pandas as pd
 
 # --- Configuration ---
-DB_FILE = "real_estate_bi.duckdb"
+DB_FILE = "immo_et_bruit.duckdb"
 
 # API du Point d'Accès National (retourne la liste complète des datasets)
 PAN_API_URL = "https://transport.data.gouv.fr/api/datasets"
