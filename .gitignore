@@ -5,6 +5,6 @@
 venv/
 __pycache__/
 
-# Dossiers de données brutes ou extraites
+# Dossiers de données brutes 
 
 *.zip
