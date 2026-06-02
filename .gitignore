@@ -5,9 +5,13 @@
 venv/
 __pycache__/
 
-# Dossiers de données brutes 
-
+# Dossiers de données brutes
 *.zip
-.env
 raw_dvf/
 raw_dpe/
+
+# Secrets
+.env
+
+# Node
+node_modules/
