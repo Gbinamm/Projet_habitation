@@ -1,6 +1,0 @@
-streamlit
-duckdb
-pandas
-plotly
-folium
-streamlit-folium
