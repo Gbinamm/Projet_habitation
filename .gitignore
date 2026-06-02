@@ -9,4 +9,5 @@ __pycache__/
 
 *.zip
 .env
-raw_dvf
+raw_dvf/
+raw_dpe/
