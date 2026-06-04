@@ -36,7 +36,7 @@ DB_FILE = "immo_et_bruit.duckdb"
 # ----------------------------------------------------------------------------
  
 # Option 1 : Loire-Atlantique uniquement (rapide, ~2 min, ~60k mutations)
-# DEPARTEMENTS = ["44"]
+DEPARTEMENTS = ["44", "49", "53", "72", "85"]
  
 # Option 2 : Pays de la Loire (~10 min, ~300k mutations)
 # DEPARTEMENTS = ["44", "49", "53", "72", "85"]
@@ -47,11 +47,11 @@ DB_FILE = "immo_et_bruit.duckdb"
 #                 "14", "50", "61", "76", "27"]
  
 # Option 4 : France entière (~1-2h, ~5M mutations, ~3 Go disque)
-DEPARTEMENTS = (
-    [str(i).zfill(2) for i in range(1, 20)]   # 01 → 19
-    + ["2A", "2B"]                              # Corse
-    + [str(i) for i in range(21, 96)]           # 21 → 95
-)
+#DEPARTEMENTS = (
+  #  [str(i).zfill(2) for i in range(1, 20)]   # 01 → 19
+    #+ ["2A", "2B"]                              # Corse
+   # + [str(i) for i in range(21, 96)]           # 21 → 95
+#)
  
 # ----------------------------------------------------------------------------
  

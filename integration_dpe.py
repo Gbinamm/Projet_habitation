@@ -31,12 +31,12 @@ RAW_DIR  = Path("raw_dpe")
 API_URL  = "https://data.ademe.fr/data-fair/api/v1/datasets/meg-83tjwtg8dyz4vv7h1dqe/lines"
 
 # Périmètre
-# DEPARTEMENTS_DPE = ["44", "49", "53", "72", "85"]  # Pays de la Loire
-DEPARTEMENTS_DPE = (                               # France entière
-    [str(i).zfill(2) for i in range(1, 20)]
-    + ["2A", "2B"]
-    + [str(i) for i in range(21, 96)]
-)
+DEPARTEMENTS_DPE = ["44", "49", "53", "72", "85"]  # Pays de la Loire
+#DEPARTEMENTS_DPE = (                               # France entière
+ #   [str(i).zfill(2) for i in range(1, 20)]
+ #   + ["2A", "2B"]
+  #  + [str(i) for i in range(21, 96)]
+#)
 
 PAGE_SIZE = 1000   
 PAUSE_S   = 0.15   
