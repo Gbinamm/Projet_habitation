@@ -1,108 +1,117 @@
+const DPE_COLORS = {
+  A: "#009966", B: "#33cc66", C: "#99cc00",
+  D: "#ffcc00", E: "#ff9900", F: "#ff6600", G: "#cc0000",
+}
+
+function fmt(n) { return n?.toLocaleString("fr-FR") ?? "—" }
+
+function DpeBadge({ dpe }) {
+  if (!dpe) return null
+  return (
+    <span style={{
+      background: DPE_COLORS[dpe] ?? "#ccc",
+      color: ["A","B","C"].includes(dpe) ? "#fff" : "#222",
+      borderRadius: 4, padding: "1px 7px",
+      fontSize: 11, fontWeight: 700, letterSpacing: 1,
+    }}>
+      DPE {dpe}
+    </span>
+  )
+}
+
+function VsMarche({ vs }) {
+  if (vs == null) return null
+  const good = vs < -5
+  const bad  = vs > 10
+  return (
+    <span style={{
+      background: good ? "#e8f5e9" : bad ? "#ffebee" : "#f5f5f5",
+      color:      good ? "#2e7d32" : bad ? "#c62828" : "#555",
+      borderRadius: 6, padding: "2px 8px",
+      fontSize: 12, fontWeight: 600,
+    }}>
+      {vs > 0 ? "+" : ""}{vs}% vs marché
+    </span>
+  )
+}
+
 export default function BienCard({ bien }) {
-  const {
-    commune, type_local, surface, pieces,
-    prix, prix_m2, dpe, date, vs_marche,
-  } = bien
-
-  const fmt = n => n?.toLocaleString("fr-FR") ?? "—"
-
-  // Badge deal
-  let dealClass, dealLabel
-  if (vs_marche == null)    { dealClass = "ok";   dealLabel = "Prix non comparé" }
-  else if (vs_marche < -5)  { dealClass = "good"; dealLabel = `↓ ${Math.abs(vs_marche).toFixed(0)}% sous le marché` }
-  else if (vs_marche > 5)   { dealClass = "bad";  dealLabel = `↑ ${vs_marche.toFixed(0)}% au-dessus` }
-  else                      { dealClass = "ok";   dealLabel = "≈ Prix dans la moyenne" }
-
-  const dealColors = {
-    good: { background: "#e8f5e9", color: "#2e7d32" },
-    ok:   { background: "#fff8e1", color: "#e65100" },
-    bad:  { background: "#fce4ec", color: "#880e4f" },
-  }
-
-  const dpeColors = {
-    A: { background: "#e8f5e9", color: "#2e7d32" },
-    B: { background: "#e0f2f1", color: "#00695c" },
-    C: { background: "#fff8e1", color: "#e65100" },
-    D: { background: "#fce4ec", color: "#880e4f" },
-  }
-
-  const icon = type_local === "Maison" ? "🏠" : "🏢"
-  const titre = `${type_local} ${pieces}P · ${surface} m²`
-
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "90px 1fr auto",
-      gap: 16, alignItems: "start",
       background: "#fff", border: "1px solid #e8e8e8",
-      borderRadius: 12, padding: "14px 16px",
-      transition: "border-color .15s, box-shadow .15s",
-      cursor: "default",
-    }}
-      onMouseEnter={e => {
-        e.currentTarget.style.borderColor = "#bbb"
-        e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,.07)"
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.borderColor = "#e8e8e8"
-        e.currentTarget.style.boxShadow = "none"
-      }}
-    >
-      {/* Thumb */}
-      <div style={{
-        width: 90, height: 70, borderRadius: 8,
-        background: "#f4f4f4", display: "flex",
-        alignItems: "center", justifyContent: "center",
-        fontSize: 28, flexShrink: 0,
-      }}>
-        {icon}
+      borderRadius: 12, padding: "16px 20px",
+      display: "flex", flexDirection: "column", gap: 8,
+    }}>
+
+      {/* Ligne 1 : titre + badges */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 700, fontSize: 15 }}>
+          {bien.type_local} · {fmt(bien.surface)} m²
+          {bien.surface_terrain ? ` (terrain ${fmt(bien.surface_terrain)} m²)` : ""}
+        </span>
+        {bien.pieces && (
+          <span style={{ fontSize: 13, color: "#888" }}>{bien.pieces} pièce{bien.pieces > 1 ? "s" : ""}</span>
+        )}
+        <DpeBadge dpe={bien.dpe} />
+        {bien.peb_zone && (
+          <span style={{
+            background: "#fff3e0", color: "#e65100",
+            borderRadius: 4, padding: "1px 7px",
+            fontSize: 11, fontWeight: 600,
+          }}>
+            ✈️ PEB zone {bien.peb_zone}
+            {bien.nom_aeroport ? ` — ${bien.nom_aeroport}` : ""}
+          </span>
+        )}
       </div>
 
-      {/* Infos */}
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>
-          {titre}
-        </div>
-        <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>
-          📍 {commune}{date ? ` · ${date.slice(0, 10)}` : ""}
-        </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {/* Tags */}
-          {[
-            `${surface} m²`,
-            `${pieces} pièce${pieces > 1 ? "s" : ""}`,
-          ].map(t => (
-            <span key={t} style={{
-              fontSize: 11, padding: "3px 9px", borderRadius: 999,
-              background: "#f0f0f0", color: "#555",
-            }}>{t}</span>
-          ))}
-          {/* DPE */}
-          {dpe && dpe !== "?" && (
-            <span style={{
-              fontSize: 11, padding: "3px 9px", borderRadius: 999,
-              ...(dpeColors[dpe] ?? { background: "#f0f0f0", color: "#555" }),
-            }}>
-              DPE {dpe}
+      {/* Ligne 2 : prix */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 20, fontWeight: 800 }}>{fmt(bien.prix)} €</span>
+        <span style={{ fontSize: 13, color: "#888" }}>{fmt(bien.prix_m2)} €/m²</span>
+        <VsMarche vs={bien.vs_marche} />
+      </div>
+
+      {/* Ligne 3 : transport */}
+      {bien.arret_plus_proche && (
+        <div style={{ fontSize: 13, color: "#555", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <span>🚌</span>
+          <span>
+            <strong>{bien.arret_plus_proche}</strong>
+            {bien.mode_transport_proche ? ` (${bien.mode_transport_proche})` : ""}
+            {bien.reseaux_transport ? ` · ${bien.reseaux_transport}` : ""}
+            {bien.distance_arret_m != null ? ` · ${fmt(bien.distance_arret_m)} m` : ""}
+          </span>
+          {bien.nb_arrets_500m != null && (
+            <span style={{ color: "#888" }}>
+              · {bien.nb_arrets_500m} arrêt{bien.nb_arrets_500m > 1 ? "s" : ""} à 500m
             </span>
           )}
         </div>
-      </div>
+      )}
 
-      {/* Prix + badge */}
-      <div style={{ textAlign: "right", minWidth: 140 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, whiteSpace: "nowrap" }}>
-          {fmt(prix)} €
+      {/* Ligne 4 : DPE détail */}
+      {(bien.pct_passoires != null || bien.conso_med_kwh_m2 != null) && (
+        <div style={{ fontSize: 12, color: "#888", display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {bien.pct_passoires != null && (
+            <span>🔥 {(bien.pct_passoires * 100).toFixed(0)}% passoires thermiques</span>
+          )}
+          {bien.pct_bons_dpe != null && (
+            <span>✅ {(bien.pct_bons_dpe * 100).toFixed(0)}% bons DPE</span>
+          )}
+          {bien.conso_med_kwh_m2 != null && (
+            <span>⚡ {bien.conso_med_kwh_m2} kWh/m²</span>
+          )}
+          {bien.n_dpe != null && (
+            <span style={{ color: "#bbb" }}>({bien.n_dpe} DPE)</span>
+          )}
         </div>
-        <div style={{ fontSize: 12, color: "#999", marginTop: 3 }}>
-          {fmt(prix_m2)} €/m²
-        </div>
-        <span style={{
-          display: "inline-block", fontSize: 11, marginTop: 8,
-          padding: "4px 10px", borderRadius: 999,
-          whiteSpace: "nowrap", ...dealColors[dealClass],
-        }}>
-          {dealLabel}
-        </span>
+      )}
+
+      {/* Ligne 5 : adresse + date */}
+      <div style={{ fontSize: 12, color: "#aaa", display: "flex", justifyContent: "space-between" }}>
+        <span>{bien.adresse ?? "—"}</span>
+        <span>{bien.date ?? "—"}</span>
       </div>
     </div>
   )

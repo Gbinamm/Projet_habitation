@@ -1,152 +1,121 @@
-import useScrollDirection from "../hooks/useScrollDirection"
+const inputStyle = {
+  fontSize: 13, padding: "7px 10px",
+  border: "1px solid #ddd", borderRadius: 8,
+  background: "#fff", width: "100%",
+}
+
+const labelStyle = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" }
+
+function Field({ label, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minWidth: 110 }}>
+      <label style={labelStyle}>{label}</label>
+      {children}
+    </div>
+  )
+}
 
 export default function FilterBar({
   communes, commune, setCommune,
-  mode, setMode,
   typeLocal, setTypeLocal,
   piecesMin, setPiecesMin,
-  surfMin, setSurfMin, surfMax, setSurfMax,
-  prixMin, setPrixMin, prixMax, setPrixMax,
+  surfMin, setSurfMin,
+  surfMax, setSurfMax,
+  prixMin, setPrixMin,
+  prixMax, setPrixMax,
   dpeMax, setDpeMax,
+  distMax, setDistMax,
   onSearch, loading,
 }) {
-  const visible = useScrollDirection(80)
-
-  const input = {
-    fontSize: 13, padding: "7px 10px",
-    border: "1px solid #ddd", borderRadius: 8,
-    width: "100%", background: "#fff",
-  }
-
-  const label = {
-    fontSize: 11, color: "#999", fontWeight: 600,
-    textTransform: "uppercase", letterSpacing: ".4px",
-    marginBottom: 5, display: "block",
-  }
-
-  const col = { display: "flex", flexDirection: "column" }
-
   return (
     <div style={{
-      position:   "sticky",
-      top:        0,
-      zIndex:     100,
-      background: "#fff",
-      borderBottom: "1px solid #e8e8e8",
-      padding:    "14px 24px",
-      transform:  visible ? "translateY(0)" : "translateY(-110%)",
-      transition: "transform 0.3s ease, box-shadow 0.3s ease",
-      boxShadow:  visible ? "0 2px 12px rgba(0,0,0,0.08)" : "none",
+      background: "#fff", borderBottom: "1px solid #e8e8e8",
+      padding: "14px 24px",
     }}>
-
-      {/* Ligne 1 : mode + commune + rechercher */}
       <div style={{
-        display: "flex", gap: 12, alignItems: "center",
-        marginBottom: 14, flexWrap: "wrap",
+        display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end",
       }}>
 
-        {/* Toggle Achat / Location */}
-        <div style={{
-          display: "flex", border: "1px solid #ddd",
-          borderRadius: 8, overflow: "hidden", flexShrink: 0,
-        }}>
-          {["Achat", "Location"].map(m => (
-            <button key={m} onClick={() => setMode(m)} style={{
-              padding: "8px 20px", border: "none", cursor: "pointer",
-              fontSize: 13, transition: "all .15s",
-              background: mode === m ? "#042C53" : "#fff",
-              color:      mode === m ? "#fff"    : "#666",
-            }}>
-              {m}
-            </button>
-          ))}
-        </div>
-
-        {/* Commune */}
-        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-          <span style={{
-            position: "absolute", left: 10, top: "50%",
-            transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none",
-          }}>📍</span>
-          <select
-            value={commune}
-            onChange={e => setCommune(e.target.value)}
-            style={{ ...input, paddingLeft: 30 }}
-          >
+        <Field label="Commune">
+          <select value={commune} onChange={e => setCommune(e.target.value)} style={inputStyle}>
             {communes.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-        </div>
+        </Field>
 
-        {/* Bouton */}
-        <button onClick={onSearch} disabled={loading} style={{
-          padding: "8px 24px", background: "#042C53", color: "#fff",
-          border: "none", borderRadius: 8, fontSize: 14, fontWeight: 500,
-          cursor: loading ? "not-allowed" : "pointer",
-          opacity: loading ? 0.7 : 1, flexShrink: 0,
-          transition: "opacity .15s",
-        }}>
-          {loading ? "..." : "🔍 Rechercher"}
-        </button>
-      </div>
-
-      {/* Ligne 2 : filtres */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1.2fr 0.8fr 0.7fr 0.7fr 0.9fr 0.9fr 0.7fr",
-        gap: 12, alignItems: "end",
-      }}>
-
-        <div style={col}>
-          <span style={label}>Type de bien</span>
-          <select value={typeLocal} onChange={e => setTypeLocal(e.target.value)} style={input}>
+        <Field label="Type de bien">
+          <select value={typeLocal} onChange={e => setTypeLocal(e.target.value)} style={inputStyle}>
             <option value="Tous">Tous</option>
             <option value="Appartement">Appartement</option>
             <option value="Maison">Maison</option>
           </select>
-        </div>
+        </Field>
 
-        <div style={col}>
-          <span style={label}>Pièces min</span>
-          <select value={piecesMin} onChange={e => setPiecesMin(e.target.value)} style={input}>
-            <option value="">Toutes</option>
+        <Field label="Pièces min">
+          <select value={piecesMin} onChange={e => setPiecesMin(e.target.value)} style={inputStyle}>
+            <option value="">—</option>
             {[1,2,3,4,5].map(n => <option key={n} value={n}>{n}+</option>)}
           </select>
-        </div>
+        </Field>
 
-        <div style={col}>
-          <span style={label}>Surface min m²</span>
-          <input type="number" placeholder="Min" value={surfMin}
-            onChange={e => setSurfMin(e.target.value)} style={input} min={0} />
-        </div>
+        <Field label="Surface min (m²)">
+          <input
+            type="number" value={surfMin} onChange={e => setSurfMin(e.target.value)}
+            placeholder="0" style={inputStyle}
+          />
+        </Field>
 
-        <div style={col}>
-          <span style={label}>Surface max m²</span>
-          <input type="number" placeholder="Max" value={surfMax}
-            onChange={e => setSurfMax(e.target.value)} style={input} min={0} />
-        </div>
+        <Field label="Surface max (m²)">
+          <input
+            type="number" value={surfMax} onChange={e => setSurfMax(e.target.value)}
+            placeholder="∞" style={inputStyle}
+          />
+        </Field>
 
-        <div style={col}>
-          <span style={label}>{mode === "Achat" ? "Budget min €" : "Loyer min €"}</span>
-          <input type="number" placeholder="Min" value={prixMin}
-            onChange={e => setPrixMin(e.target.value)} style={input} min={0} />
-        </div>
+        <Field label="Prix min (€)">
+          <input
+            type="number" value={prixMin} onChange={e => setPrixMin(e.target.value)}
+            placeholder="0" style={inputStyle}
+          />
+        </Field>
 
-        <div style={col}>
-          <span style={label}>{mode === "Achat" ? "Budget max €" : "Loyer max €"}</span>
-          <input type="number" placeholder="Max" value={prixMax}
-            onChange={e => setPrixMax(e.target.value)} style={input} min={0} />
-        </div>
+        <Field label="Prix max (€)">
+          <input
+            type="number" value={prixMax} onChange={e => setPrixMax(e.target.value)}
+            placeholder="∞" style={inputStyle}
+          />
+        </Field>
 
-        <div style={col}>
-          <span style={label}>DPE max</span>
-          <select value={dpeMax} onChange={e => setDpeMax(e.target.value)} style={input}>
+        <Field label="DPE max">
+          <select value={dpeMax} onChange={e => setDpeMax(e.target.value)} style={inputStyle}>
             <option value="">Tous</option>
             {["A","B","C","D","E","F","G"].map(d => (
               <option key={d} value={d}>{d}</option>
             ))}
           </select>
-        </div>
+        </Field>
 
+        <Field label="Arrêt max (m)">
+          <select value={distMax} onChange={e => setDistMax(e.target.value)} style={inputStyle}>
+            <option value="">Tous</option>
+            <option value="300">300 m</option>
+            <option value="500">500 m</option>
+            <option value="1000">1 km</option>
+            <option value="2000">2 km</option>
+          </select>
+        </Field>
+
+        <button
+          onClick={onSearch}
+          disabled={loading}
+          style={{
+            padding: "8px 22px", background: "#042C53", color: "#fff",
+            border: "none", borderRadius: 8, fontSize: 14, fontWeight: 600,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.6 : 1, alignSelf: "flex-end",
+          }}
+        >
+          {loading ? "..." : "Rechercher"}
+        </button>
       </div>
     </div>
   )

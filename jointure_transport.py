@@ -5,17 +5,18 @@ Crée la table finale 'dvf_enrichi' croisant :
   - DVF + PEB          (dvf_avec_peb)
   - Transport          (transport_stops_clean)
   - DPE                (dpe_commune)
-
+ 
 Colonnes ajoutées par rapport à la version précédente :
   - nature_mutation     (depuis dvf_avec_peb)
   - surface_terrain     (depuis dvf_avec_peb)
   - nom_aeroport        (depuis peb_raw — quel aéroport génère le bruit)
   - n_dpe               (depuis dpe_commune — fiabilité des stats DPE)
   - reseaux_transport   (depuis transport_stops_clean — nom du réseau)
-
+ 
 Corrections :
   - DISTINCT ON remplacé par ROW_NUMBER() OVER (syntaxe DuckDB correcte)
-
+  - batch_str : conversion explicite en str() pour gérer les code_departement INTEGER
+ 
 Optimisations :
   1. Traitement par batch de départements pour contrôler la RAM
   2. Bounding box ±0.05°/±0.07° avant ST_Distance
@@ -24,14 +25,14 @@ Optimisations :
 """
 from __future__ import annotations
 import duckdb
-
+ 
 DB_FILE  = "immo_et_bruit.duckdb"
 RAYONS_M = [500, 1000, 2000]
-
+ 
 # Réduis à 5 si tu manques de RAM (8 Go), garde 10 pour 16 Go
 BATCH_SIZE = 10
-
-
+ 
+ 
 # ============================================================================
 # Vérification des prérequis
 # ============================================================================
@@ -48,32 +49,32 @@ def check_prerequis(con) -> bool:
     if "dpe_commune" not in presentes:
         print("INFO : 'dpe_commune' absente — enrichissement DPE ignoré.")
     return True
-
-
+ 
+ 
 def _table_exists(con, name: str) -> bool:
     return con.execute(f"""
         SELECT COUNT(*) FROM information_schema.tables
         WHERE table_name = '{name}'
     """).fetchone()[0] > 0
-
-
+ 
+ 
 # ============================================================================
 # Étape 1 : Transport (arrêt le plus proche + densité)
 # ============================================================================
 def _creer_transport_enrichi(con) -> None:
     print("\n1. Enrichissement transport (arrêt proche + densité)...")
-
+ 
     con.execute("INSTALL spatial; LOAD spatial;")
-
+ 
     depts = [r[0] for r in con.execute("""
         SELECT DISTINCT code_departement
         FROM dvf_avec_peb
         WHERE code_departement IS NOT NULL
         ORDER BY code_departement
     """).fetchall()]
-
+ 
     print(f"   {len(depts)} département(s) — batches de {BATCH_SIZE}...")
-
+ 
     con.execute("""
     CREATE OR REPLACE TEMP TABLE _transport (
         id_mutation          VARCHAR,
@@ -86,18 +87,19 @@ def _creer_transport_enrichi(con) -> None:
         nb_arrets_2000m      INTEGER
     )
     """)
-
+ 
     rayons_sql = ", ".join(
         f"COUNT(*) FILTER (WHERE dist_m <= {r}) AS nb_arrets_{r}m"
         for r in RAYONS_M
     )
-
+ 
     batches = [depts[i:i+BATCH_SIZE] for i in range(0, len(depts), BATCH_SIZE)]
-
+ 
     for bi, batch in enumerate(batches, 1):
-        batch_str = "', '".join(batch)
+        # CORRECTION : conversion explicite en str() pour gérer les INTEGER
+        batch_str = "', '".join(str(d) for d in batch if d is not None)
         print(f"   Batch {bi}/{len(batches)} : depts {batch}")
-
+ 
         con.execute(f"""
         INSERT INTO _transport
         WITH
@@ -117,7 +119,7 @@ def _creer_transport_enrichi(con) -> None:
             JOIN transport_stops_clean s
               ON s.latitude  BETWEEN d.latitude  - 0.05 AND d.latitude  + 0.05
              AND s.longitude BETWEEN d.longitude - 0.07 AND d.longitude + 0.07
-            WHERE d.code_departement IN ('{batch_str}')
+            WHERE CAST(d.code_departement AS VARCHAR) IN ('{batch_str}')
         ),
         -- ✅ ROW_NUMBER() — syntaxe DuckDB correcte (DISTINCT ON = PostgreSQL)
         nearest AS (
@@ -153,17 +155,17 @@ def _creer_transport_enrichi(con) -> None:
         FROM nearest n
         LEFT JOIN counts c USING (id_mutation)
         """)
-
+ 
     n = con.execute("SELECT COUNT(*) FROM _transport").fetchone()[0]
     print(f"   → {n:,} mutations enrichies transport")
-
-
+ 
+ 
 # ============================================================================
 # Étape 2 : DPE
 # ============================================================================
 def _creer_dpe_enrichi(con) -> None:
     print("\n2. Enrichissement DPE (par commune × type)...")
-
+ 
     if not _table_exists(con, "dpe_commune"):
         print("   'dpe_commune' absente — étape DPE ignorée.")
         con.execute("""
@@ -177,7 +179,7 @@ def _creer_dpe_enrichi(con) -> None:
         )
         """)
         return
-
+ 
     con.execute("""
     CREATE OR REPLACE TEMP TABLE _dpe AS
     SELECT
@@ -195,21 +197,21 @@ def _creer_dpe_enrichi(con) -> None:
         OR (d.type_local = 'Appartement' AND dpe.type_batiment = 'appartement')
      )
     """)
-
+ 
     n_avec = con.execute(
         "SELECT COUNT(*) FROM _dpe WHERE pct_passoires IS NOT NULL"
     ).fetchone()[0]
     n_total = con.execute("SELECT COUNT(*) FROM _dpe").fetchone()[0]
     print(f"   → {n_avec:,} / {n_total:,} mutations avec DPE "
           f"({100*n_avec//n_total if n_total else 0}%)")
-
-
+ 
+ 
 # ============================================================================
 # Étape 3 : Nom de l'aéroport depuis peb_raw
 # ============================================================================
 def _creer_peb_enrichi(con) -> None:
     print("\n3. Enrichissement PEB (nom aéroport)...")
-
+ 
     if not _table_exists(con, "peb_raw"):
         print("   'peb_raw' absente — étape PEB ignorée.")
         con.execute("""
@@ -219,7 +221,7 @@ def _creer_peb_enrichi(con) -> None:
         )
         """)
         return
-
+ 
     # Une zone peut avoir plusieurs polygones (un par aéroport)
     # On prend le nom le plus fréquent par zone
     con.execute("""
@@ -231,21 +233,21 @@ def _creer_peb_enrichi(con) -> None:
     WHERE peb_zone IS NOT NULL
     GROUP BY peb_zone
     """)
-
+ 
     zones = con.execute("SELECT * FROM _peb_noms").fetchall()
     print(f"   → {len(zones)} zones PEB avec nom d'aéroport")
     for zone, nom in zones:
         print(f"      Zone {zone} : {nom}")
-
-
+ 
+ 
 # ============================================================================
 # Étape 4 : Assemblage final dvf_enrichi
 # ============================================================================
 def _assembler_dvf_enrichi(con) -> None:
     print("\n4. Assemblage final → dvf_enrichi...")
-
+ 
     con.execute("DROP TABLE IF EXISTS dvf_enrichi;")
-
+ 
     con.execute("""
     CREATE TABLE dvf_enrichi AS
     SELECT
@@ -266,11 +268,11 @@ def _assembler_dvf_enrichi(con) -> None:
         d.nom_commune,
         d.longitude,
         d.latitude,
-
+ 
         -- === PEB ===
         d.peb_zone,
         pn.nom_aeroport,                             -- nom de l'aéroport
-
+ 
         -- === Transport ===
         t.arret_plus_proche,
         t.mode_arret                                 AS mode_transport_proche,
@@ -279,24 +281,24 @@ def _assembler_dvf_enrichi(con) -> None:
         COALESCE(t.nb_arrets_500m,  0)               AS nb_arrets_500m,
         COALESCE(t.nb_arrets_1000m, 0)               AS nb_arrets_1000m,
         COALESCE(t.nb_arrets_2000m, 0)               AS nb_arrets_2000m,
-
+ 
         -- === DPE ===
         dpe.pct_passoires,
         dpe.pct_bons_dpe,
         dpe.classe_dpe_dominante,
         dpe.conso_med_kwh_m2,
         dpe.n_dpe                                    -- nb DPE (fiabilité stats)
-
+ 
     FROM dvf_avec_peb d
     LEFT JOIN _transport t   ON d.id_mutation  = t.id_mutation
     LEFT JOIN _dpe       dpe ON d.id_mutation  = dpe.id_mutation
     LEFT JOIN _peb_noms  pn  ON d.peb_zone     = pn.peb_zone
     """)
-
+ 
     total = con.execute("SELECT COUNT(*) FROM dvf_enrichi").fetchone()[0]
     print(f"   → {total:,} lignes dans dvf_enrichi")
-
-
+ 
+ 
 # ============================================================================
 # Bilan
 # ============================================================================
@@ -304,12 +306,12 @@ def bilan(con) -> None:
     print("\n" + "=" * 60)
     print("BILAN — dvf_enrichi")
     print("=" * 60)
-
+ 
     n = con.execute("SELECT COUNT(*) FROM dvf_enrichi").fetchone()[0]
     if n == 0:
         print("Table vide !")
         return
-
+ 
     n_depts = con.execute(
         "SELECT COUNT(DISTINCT code_departement) FROM dvf_enrichi"
     ).fetchone()[0]
@@ -322,7 +324,7 @@ def bilan(con) -> None:
     n_peb = con.execute(
         "SELECT COUNT(*) FROM dvf_enrichi WHERE peb_zone IS NOT NULL"
     ).fetchone()[0]
-
+ 
     print(f"  Mutations totales          : {n:>10,}")
     print(f"  Départements couverts      : {n_depts:>10,}")
     print(f"  Avec données transport     : {n_transport:>10,}  "
@@ -331,7 +333,7 @@ def bilan(con) -> None:
           f"({100*n_dpe//n}%)")
     print(f"  En zone PEB                : {n_peb:>10,}  "
           f"({100*n_peb//n}%)")
-
+ 
     print("\nColonnes de dvf_enrichi :")
     cols = con.execute("""
         SELECT column_name, data_type
@@ -341,7 +343,7 @@ def bilan(con) -> None:
     """).fetchall()
     for col, dtype in cols:
         print(f"  {col:<35} {dtype}")
-
+ 
     print("\nTop 5 communes par volume :")
     print(con.execute("""
         SELECT nom_commune, code_departement,
@@ -354,7 +356,7 @@ def bilan(con) -> None:
         GROUP BY nom_commune, code_departement
         ORDER BY n_ventes DESC LIMIT 5
     """).df().to_string(index=False))
-
+ 
     print("\nEffet distance transport sur prix médian :")
     print(con.execute("""
         SELECT
@@ -379,8 +381,8 @@ def bilan(con) -> None:
                 ELSE 5
             END
     """).df().to_string(index=False))
-
-
+ 
+ 
 # ============================================================================
 # Main
 # ============================================================================
@@ -390,24 +392,24 @@ if __name__ == "__main__":
     ap.add_argument("--reset", action="store_true",
                     help="Recrée dvf_enrichi même si elle existe déjà")
     args = ap.parse_args()
-
+ 
     con = duckdb.connect(DB_FILE)
-
+ 
     if not check_prerequis(con):
         con.close()
         exit(1)
-
+ 
     if not args.reset and _table_exists(con, "dvf_enrichi"):
         print("'dvf_enrichi' existe déjà. Lance avec --reset pour recalculer.")
         bilan(con)
         con.close()
         exit(0)
-
+ 
     _creer_transport_enrichi(con)
     _creer_dpe_enrichi(con)
     _creer_peb_enrichi(con)
     _assembler_dvf_enrichi(con)
     bilan(con)
-
+ 
     con.close()
     print("\nTable dvf_enrichi prête.")
