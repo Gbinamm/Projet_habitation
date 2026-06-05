@@ -5,6 +5,7 @@ Backend unifié FastAPI :
   - Endpoints données immobilières (communes, biens, carte, stats)
   - Endpoints chatbot (agent Groq + DuckDB)
 
+Table principale : dvf_enrichi
 Lance avec : uvicorn main:app --reload --port 8000
 Docs auto  : http://localhost:8000/docs
 """
@@ -24,7 +25,7 @@ from agent import chat
 app = FastAPI(
     title="ImmoBI API",
     description="API unifiée — données immobilières + chatbot",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -39,6 +40,9 @@ app.add_middleware(
 # Stockage conversations en mémoire
 # ============================================================================
 CONVERSATIONS: dict[str, list[dict]] = {}
+
+# Ordre DPE pour filtrage
+DPE_ORDER = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5, "F": 6, "G": 7, "": 99}
 
 
 # ============================================================================
@@ -59,14 +63,14 @@ class ChatResponse(BaseModel):
 # ============================================================================
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "ImmoBI API"}
+    return {"status": "ok", "service": "ImmoBI API v2"}
 
 
 @app.get("/health")
 def health():
     try:
         con = get_connection()
-        n = con.execute("SELECT COUNT(*) FROM dvf_raw").fetchone()[0]
+        n = con.execute("SELECT COUNT(*) FROM dvf_enrichi").fetchone()[0]
         return {"status": "healthy", "n_transactions": n}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"DB inaccessible: {e}")
@@ -78,20 +82,26 @@ def health():
 
 @app.get("/api/communes")
 def get_communes():
+    """Liste des communes disponibles dans dvf_enrichi."""
     con = get_connection()
     rows = con.execute("""
-        SELECT DISTINCT nom_commune FROM dvf_raw
-        WHERE nom_commune IS NOT NULL ORDER BY nom_commune
+        SELECT DISTINCT nom_commune
+        FROM dvf_enrichi
+        WHERE nom_commune IS NOT NULL
+        ORDER BY nom_commune
     """).fetchall()
     return [r[0] for r in rows]
 
 
 @app.get("/api/annees")
 def get_annees():
+    """Années disponibles dans dvf_enrichi (colonne annee précalculée)."""
     con = get_connection()
     rows = con.execute("""
-        SELECT DISTINCT YEAR(date_mutation) AS annee
-        FROM dvf_raw ORDER BY annee DESC
+        SELECT DISTINCT annee
+        FROM dvf_enrichi
+        WHERE annee IS NOT NULL
+        ORDER BY annee DESC
     """).fetchall()
     return [r[0] for r in rows]
 
@@ -109,21 +119,28 @@ def get_biens(
     tri:        str             = "deal",
     limit:      int             = 60,
 ):
+    """
+    Biens filtrés avec score vs_marche et données enrichies
+    (transport, DPE, PEB).
+    """
     con = get_connection()
 
+    # 2 dernières années disponibles
     annees = con.execute("""
-        SELECT DISTINCT YEAR(date_mutation) AS annee
-        FROM dvf_raw ORDER BY annee DESC LIMIT 2
+        SELECT DISTINCT annee FROM dvf_enrichi
+        ORDER BY annee DESC LIMIT 2
     """).fetchall()
     annees_str = ", ".join(str(r[0]) for r in annees)
 
-    dpe_order  = {"A":1,"B":2,"C":3,"D":4,"E":5,"F":6,"G":7,"":99}
-    dpe_values = [k for k,v in dpe_order.items()
-                  if v <= dpe_order.get(dpe_max, 99) and k != ""]
+    # Filtre DPE
+    dpe_values = [
+        k for k, v in DPE_ORDER.items()
+        if v <= DPE_ORDER.get(dpe_max, 99) and k != ""
+    ]
 
     filters = [
         f"d.nom_commune = '{commune}'",
-        f"YEAR(d.date_mutation) IN ({annees_str})",
+        f"d.annee IN ({annees_str})",
         "d.prix_m2 BETWEEN 100 AND 30000",
         "d.surface_reelle_bati IS NOT NULL",
         "d.valeur_fonciere IS NOT NULL",
@@ -142,7 +159,9 @@ def get_biens(
         filters.append(f"d.valeur_fonciere <= {prix_max}")
     if dpe_values:
         vals = ", ".join(f"'{v}'" for v in dpe_values)
-        filters.append(f"(d.dpe_classe IN ({vals}) OR d.dpe_classe IS NULL)")
+        filters.append(
+            f"(d.classe_dpe_dominante IN ({vals}) OR d.classe_dpe_dominante IS NULL)"
+        )
 
     where = " AND ".join(filters)
     order = {
@@ -154,61 +173,117 @@ def get_biens(
 
     rows = con.execute(f"""
     WITH medians AS (
-        SELECT nom_commune, type_local, MEDIAN(prix_m2) AS prix_median_commune
-        FROM dvf_raw
-        WHERE YEAR(date_mutation) IN ({annees_str})
+        SELECT nom_commune, type_local,
+               MEDIAN(prix_m2) AS prix_median_commune
+        FROM dvf_enrichi
+        WHERE annee IN ({annees_str})
           AND prix_m2 BETWEEN 100 AND 30000
         GROUP BY nom_commune, type_local
     )
     SELECT
-        d.nom_commune, d.type_local,
-        d.surface_reelle_bati                                       AS surface,
-        d.nombre_pieces_principales                                 AS pieces,
-        d.valeur_fonciere                                           AS prix,
-        ROUND(d.prix_m2, 0)                                         AS prix_m2,
-        d.dpe_classe                                                AS dpe,
-        CAST(d.date_mutation AS VARCHAR)                            AS date_mutation,
-        ROUND((d.prix_m2 - m.prix_median_commune)
-              / NULLIF(m.prix_median_commune, 0) * 100, 1)          AS vs_marche
-    FROM dvf_raw d
-    LEFT JOIN medians m ON d.nom_commune = m.nom_commune
-                       AND d.type_local  = m.type_local
+        d.id_mutation,
+        d.nom_commune,
+        d.type_local,
+        d.surface_reelle_bati                                        AS surface,
+        d.surface_terrain,
+        d.nombre_pieces_principales                                  AS pieces,
+        d.valeur_fonciere                                            AS prix,
+        ROUND(d.prix_m2, 0)                                          AS prix_m2,
+        d.adresse,
+        CAST(d.date_mutation AS VARCHAR)                             AS date_mutation,
+        d.annee,
+        -- DPE
+        d.classe_dpe_dominante                                       AS dpe,
+        d.pct_passoires,
+        d.pct_bons_dpe,
+        d.conso_med_kwh_m2,
+        d.n_dpe,
+        -- Transport
+        d.arret_plus_proche,
+        d.mode_transport_proche,
+        d.reseaux_transport,
+        ROUND(d.distance_arret_m, 0)                                 AS distance_arret_m,
+        d.nb_arrets_500m,
+        d.nb_arrets_1000m,
+        d.nb_arrets_2000m,
+        -- PEB
+        d.peb_zone,
+        d.nom_aeroport,
+        -- Score marché
+        ROUND(
+            (d.prix_m2 - m.prix_median_commune)
+            / NULLIF(m.prix_median_commune, 0) * 100,
+        1) AS vs_marche
+    FROM dvf_enrichi d
+    LEFT JOIN medians m
+           ON d.nom_commune = m.nom_commune
+          AND d.type_local  = m.type_local
     WHERE {where}
     ORDER BY {order}
     LIMIT {limit}
     """).fetchall()
 
-    keys = ["commune","type_local","surface","pieces",
-            "prix","prix_m2","dpe","date","vs_marche"]
+    keys = [
+        "id_mutation", "commune", "type_local", "surface", "surface_terrain",
+        "pieces", "prix", "prix_m2", "adresse", "date", "annee",
+        "dpe", "pct_passoires", "pct_bons_dpe", "conso_med_kwh_m2", "n_dpe",
+        "arret_plus_proche", "mode_transport_proche", "reseaux_transport",
+        "distance_arret_m", "nb_arrets_500m", "nb_arrets_1000m", "nb_arrets_2000m",
+        "peb_zone", "nom_aeroport",
+        "vs_marche",
+    ]
     return [dict(zip(keys, r)) for r in rows]
 
 
 @app.get("/api/stats")
 def get_stats(commune: str):
+    """
+    Statistiques agrégées pour une commune :
+    prix, surface, DPE, transport.
+    """
     con = get_connection()
     row = con.execute("""
         SELECT
-            COUNT(*)                         AS nb,
-            ROUND(MEDIAN(valeur_fonciere),0) AS prix_median,
-            ROUND(MEDIAN(prix_m2),0)         AS prix_median_m2,
-            ROUND(AVG(surface_reelle_bati),0) AS surface_moyenne
-        FROM dvf_raw
+            COUNT(*)                              AS nb,
+            ROUND(MEDIAN(valeur_fonciere), 0)     AS prix_median,
+            ROUND(MEDIAN(prix_m2), 0)             AS prix_median_m2,
+            ROUND(AVG(surface_reelle_bati), 0)    AS surface_moyenne,
+            ROUND(MEDIAN(distance_arret_m), 0)    AS distance_arret_mediane,
+            ROUND(AVG(nb_arrets_500m), 1)         AS moy_arrets_500m,
+            ROUND(AVG(pct_passoires) * 100, 1)    AS pct_passoires_moyen,
+            ROUND(AVG(pct_bons_dpe)  * 100, 1)    AS pct_bons_dpe_moyen,
+            MODE(classe_dpe_dominante)             AS dpe_dominant,
+            MODE(reseaux_transport)                AS reseau_principal,
+            COUNT(*) FILTER (WHERE peb_zone IS NOT NULL) AS nb_en_peb
+        FROM dvf_enrichi
         WHERE nom_commune = ?
           AND prix_m2 BETWEEN 100 AND 30000
     """, [commune]).fetchone()
+
     return {
-        "nb":              row[0],
-        "prix_median":     row[1],
-        "prix_median_m2":  row[2],
-        "surface_moyenne": row[3],
+        "nb":                    row[0],
+        "prix_median":           row[1],
+        "prix_median_m2":        row[2],
+        "surface_moyenne":       row[3],
+        "distance_arret_mediane":row[4],
+        "moy_arrets_500m":       row[5],
+        "pct_passoires_moyen":   row[6],
+        "pct_bons_dpe_moyen":    row[7],
+        "dpe_dominant":          row[8],
+        "reseau_principal":      row[9],
+        "nb_en_peb":             row[10],
     }
 
 
 @app.get("/api/carte")
 def get_carte(type_local: str = "Tous", annee: int = 2024):
+    """
+    Données agrégées par commune pour la carte,
+    incluant score transport et DPE moyen.
+    """
     con = get_connection()
     filters = [
-        f"YEAR(date_mutation) = {annee}",
+        f"annee = {annee}",
         "prix_m2 BETWEEN 100 AND 30000",
         "latitude IS NOT NULL",
         "longitude IS NOT NULL",
@@ -220,19 +295,29 @@ def get_carte(type_local: str = "Tous", annee: int = 2024):
     rows = con.execute(f"""
         SELECT
             nom_commune,
-            ROUND(AVG(latitude), 4)   AS lat,
-            ROUND(AVG(longitude), 4)  AS lng,
-            ROUND(MEDIAN(prix_m2), 0) AS prix_median_m2,
-            ROUND(AVG(prix_m2), 0)    AS prix_moyen_m2,
-            COUNT(*)                  AS nb_transactions
-        FROM dvf_raw
+            ROUND(AVG(latitude),  4)              AS lat,
+            ROUND(AVG(longitude), 4)              AS lng,
+            ROUND(MEDIAN(prix_m2), 0)             AS prix_median_m2,
+            ROUND(AVG(prix_m2), 0)                AS prix_moyen_m2,
+            COUNT(*)                              AS nb_transactions,
+            ROUND(MEDIAN(distance_arret_m), 0)    AS distance_arret_mediane,
+            ROUND(AVG(nb_arrets_1000m), 1)        AS moy_arrets_1km,
+            ROUND(AVG(pct_passoires) * 100, 1)    AS pct_passoires,
+            MODE(classe_dpe_dominante)             AS dpe_dominant,
+            COUNT(*) FILTER (WHERE peb_zone IS NOT NULL) AS nb_en_peb
+        FROM dvf_enrichi
         WHERE {where}
         GROUP BY nom_commune
         HAVING COUNT(*) >= 3
         ORDER BY nb_transactions DESC
     """).fetchall()
 
-    keys = ["commune","lat","lng","prix_median_m2","prix_moyen_m2","nb_transactions"]
+    keys = [
+        "commune", "lat", "lng",
+        "prix_median_m2", "prix_moyen_m2", "nb_transactions",
+        "distance_arret_mediane", "moy_arrets_1km",
+        "pct_passoires", "dpe_dominant", "nb_en_peb",
+    ]
     return [dict(zip(keys, r)) for r in rows]
 
 
@@ -249,7 +334,7 @@ def chat_endpoint(req: ChatRequest):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Erreur agent: {type(e).__name__}: {e}"
+            detail=f"Erreur agent: {type(e).__name__}: {e}",
         )
     CONVERSATIONS[session_id] = new_history
     return ChatResponse(

@@ -7,7 +7,6 @@ export default function Recherche() {
   // ── State filtres ──────────────────────────────────────────────
   const [communes, setCommunes]       = useState([])
   const [commune, setCommune]         = useState("")
-  const [mode, setMode]               = useState("Achat")
   const [typeLocal, setTypeLocal]     = useState("Tous")
   const [piecesMin, setPiecesMin]     = useState("")
   const [surfMin, setSurfMin]         = useState("")
@@ -15,6 +14,7 @@ export default function Recherche() {
   const [prixMin, setPrixMin]         = useState("")
   const [prixMax, setPrixMax]         = useState("")
   const [dpeMax, setDpeMax]           = useState("")
+  const [distMax, setDistMax]         = useState("")   // filtre distance transport
   const [tri, setTri]                 = useState("deal")
 
   // ── State résultats ────────────────────────────────────────────
@@ -23,7 +23,6 @@ export default function Recherche() {
   const [loading, setLoading]         = useState(false)
   const [searched, setSearched]       = useState(false)
 
-  // ── Chargement communes ────────────────────────────────────────
   useEffect(() => {
     getCommunes().then(data => {
       setCommunes(data)
@@ -31,7 +30,6 @@ export default function Recherche() {
     })
   }, [])
 
-  // ── Recherche ──────────────────────────────────────────────────
   const handleSearch = async () => {
     if (!commune) return
     setLoading(true)
@@ -52,18 +50,22 @@ export default function Recherche() {
         getBiens(params),
         getStats(commune),
       ])
-      setBiens(bienData)
+      // Filtre distance côté client
+      const filtered = distMax
+        ? bienData.filter(b => b.distance_arret_m == null || b.distance_arret_m <= Number(distMax))
+        : bienData
+      setBiens(filtered)
       setStats(statsData)
     } finally {
       setLoading(false)
     }
   }
 
-  // ── Tri côté client ────────────────────────────────────────────
   const biensTries = [...biens].sort((a, b) => {
-    if (tri === "prix-asc")  return a.prix - b.prix
-    if (tri === "prix-desc") return b.prix - a.prix
-    if (tri === "surf-desc") return b.surface - a.surface
+    if (tri === "prix-asc")   return a.prix - b.prix
+    if (tri === "prix-desc")  return b.prix - a.prix
+    if (tri === "surf-desc")  return b.surface - a.surface
+    if (tri === "transport")  return (a.distance_arret_m ?? 9999) - (b.distance_arret_m ?? 9999)
     return (a.vs_marche ?? 999) - (b.vs_marche ?? 999)
   })
 
@@ -78,16 +80,13 @@ export default function Recherche() {
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <span style={{ fontSize: 22 }}>🏠</span>
-        <span style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>
-          ImmoBI
-        </span>
+        <span style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>ImmoBI</span>
       </div>
 
       {/* ── FilterBar ── */}
       <FilterBar
         communes={communes}
         commune={commune}         setCommune={setCommune}
-        mode={mode}               setMode={setMode}
         typeLocal={typeLocal}     setTypeLocal={setTypeLocal}
         piecesMin={piecesMin}     setPiecesMin={setPiecesMin}
         surfMin={surfMin}         setSurfMin={setSurfMin}
@@ -95,37 +94,42 @@ export default function Recherche() {
         prixMin={prixMin}         setPrixMin={setPrixMin}
         prixMax={prixMax}         setPrixMax={setPrixMax}
         dpeMax={dpeMax}           setDpeMax={setDpeMax}
+        distMax={distMax}         setDistMax={setDistMax}
         onSearch={handleSearch}
         loading={loading}
       />
 
-      {/* ── Contenu ── */}
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
 
-        {/* Métriques */}
+        {/* ── Métriques commune ── */}
         {searched && stats && (
           <div style={{
-            display: "grid", gridTemplateColumns: "repeat(4, 1fr)",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
             gap: 12, marginBottom: 24,
           }}>
             {[
-              { label: "Annonces",        value: biens.length },
-              { label: "Prix médian",     value: stats.prix_median?.toLocaleString("fr-FR") + " €" },
-              { label: "Médian / m²",     value: stats.prix_median_m2?.toLocaleString("fr-FR") + " €/m²" },
-              { label: "Bonnes affaires", value: `${bonnes} / ${biens.length}` },
+              { label: "Annonces",            value: biens.length },
+              { label: "Prix médian",          value: stats.prix_median?.toLocaleString("fr-FR") + " €" },
+              { label: "Médian / m²",          value: stats.prix_median_m2?.toLocaleString("fr-FR") + " €/m²" },
+              { label: "Bonnes affaires",      value: `${bonnes} / ${biens.length}` },
+              { label: "Arrêt médian",         value: stats.distance_arret_mediane != null ? stats.distance_arret_mediane + " m" : "—" },
+              { label: "DPE dominant",         value: stats.dpe_dominant ?? "—" },
+              { label: "% passoires therm.",   value: stats.pct_passoires_moyen != null ? stats.pct_passoires_moyen + "%" : "—" },
+              { label: "Réseau principal",     value: stats.reseau_principal ?? "—" },
             ].map(m => (
               <div key={m.label} style={{
                 background: "#fff", border: "1px solid #e8e8e8",
                 borderRadius: 12, padding: "14px 18px",
               }}>
                 <div style={{ fontSize: 11, color: "#999", marginBottom: 4 }}>{m.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>{m.value}</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{m.value}</div>
               </div>
             ))}
           </div>
         )}
 
-        {/* Tri + compteur */}
+        {/* ── Tri + compteur ── */}
         {searched && biens.length > 0 && (
           <div style={{
             display: "flex", justifyContent: "space-between",
@@ -137,34 +141,27 @@ export default function Recherche() {
             <select
               value={tri}
               onChange={e => setTri(e.target.value)}
-              style={{
-                fontSize: 13, padding: "6px 10px",
-                border: "1px solid #ddd", borderRadius: 8,
-              }}
+              style={{ fontSize: 13, padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8 }}
             >
               <option value="deal">Meilleures affaires d'abord</option>
               <option value="prix-asc">Prix croissant</option>
               <option value="prix-desc">Prix décroissant</option>
               <option value="surf-desc">Surface décroissante</option>
+              <option value="transport">Plus proche transport</option>
             </select>
           </div>
         )}
 
-        {/* Loading */}
         {loading && (
-          <div style={{ textAlign: "center", padding: 60, color: "#999" }}>
-            Chargement...
-          </div>
+          <div style={{ textAlign: "center", padding: 60, color: "#999" }}>Chargement...</div>
         )}
 
-        {/* Aucun résultat */}
         {searched && !loading && biens.length === 0 && (
           <div style={{ textAlign: "center", padding: 60, color: "#aaa" }}>
             😶 Aucun résultat — essayez d'élargir les filtres.
           </div>
         )}
 
-        {/* Cards */}
         {!loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {biensTries.map((bien, i) => (
@@ -173,13 +170,11 @@ export default function Recherche() {
           </div>
         )}
 
-        {/* État initial */}
         {!searched && !loading && (
           <div style={{ textAlign: "center", padding: 80, color: "#aaa" }}>
             🔍 Choisissez une commune et lancez la recherche
           </div>
         )}
-
       </div>
     </div>
   )
