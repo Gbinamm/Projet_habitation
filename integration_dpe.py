@@ -30,14 +30,21 @@ DB_FILE  = "immo_et_bruit.duckdb"
 RAW_DIR  = Path("raw_dpe")
 API_URL  = "https://data.ademe.fr/data-fair/api/v1/datasets/meg-83tjwtg8dyz4vv7h1dqe/lines"
 
-# Périmètre
-DEPARTEMENTS_DPE = ["44", "49", "53", "72", "85"]  # Pays de la Loire
-#DEPARTEMENTS_DPE = (                               # France entière
- #   [str(i).zfill(2) for i in range(1, 20)]
- #   + ["2A", "2B"]
-  #  + [str(i) for i in range(21, 96)]
-#)
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
+
+_raw = os.getenv("DEPARTEMENTS", "44,49,53,72,85")
+
+if _raw.strip().upper() == "ALL":
+    DEPARTEMENTS_DPE = (
+        [str(i).zfill(2) for i in range(1, 20)]
+        + ["2A", "2B"]
+        + [str(i) for i in range(21, 96)]
+    )
+else:
+    DEPARTEMENTS_DPE = [d.strip() for d in _raw.split(",")]
 PAGE_SIZE = 1000   
 PAUSE_S   = 0.15   
 TIMEOUT_S = 60     
