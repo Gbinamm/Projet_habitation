@@ -1,5 +1,17 @@
+# ============================================================================
+# docker-compose.yml
+#
+# Commandes :
+#   docker compose up                              → backend + frontend
+#   docker compose up --build                      → rebuild + démarre
+#   docker compose up backend                      → backend seul
+#   docker compose --profile pipeline run --rm pipeline → pipeline données
+#   docker compose down                            → arrête tout
+#   docker compose logs -f backend                 → logs en temps réel
+# ============================================================================
 services:
 
+  # ── Backend FastAPI ─────────────────────────────────────────────────────────
   backend:
     build:
       context: .
@@ -7,10 +19,19 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./immo_et_bruit.duckdb:/app/data/immo_et_bruit.duckdb
+      # Monte la base DuckDB directement dans back/
+      # car backend.py utilise un chemin relatif depuis back/
+      - ./immo_et_bruit.duckdb:/app/back/immo_et_bruit.duckdb
     env_file: .env
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
+  # ── Frontend React ──────────────────────────────────────────────────────────
   frontend:
     build:
       context: .
@@ -18,5 +39,21 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+
+  # ── Pipeline d'ingestion (one-shot, manuel) ─────────────────────────────────
+  # Ne démarre PAS avec docker compose up
+  # Lancement : docker compose --profile pipeline run --rm pipeline
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    volumes:
+      - ./immo_et_bruit.duckdb:/app/immo_et_bruit.duckdb
+      - ./raw_dvf:/app/raw_dvf
+      - ./raw_dpe:/app/raw_dpe
+    env_file: .env
+    profiles:
+      - pipeline

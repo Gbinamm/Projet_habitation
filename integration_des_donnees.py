@@ -25,7 +25,8 @@ import json
 import os
 import tempfile
 from pathlib import Path
- 
+from dotenv import load_dotenv
+import os
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -33,10 +34,20 @@ DB_FILE = "immo_et_bruit.duckdb"
  
 # ----------------------------------------------------------------------------
 # PÉRIMÈTRE GÉOGRAPHIQUE — décommente le périmètre voulu
-# ----------------------------------------------------------------------------
- 
-# Option 1 : Loire-Atlantique uniquement (rapide, ~2 min, ~60k mutations)
-DEPARTEMENTS = ["44", "49", "53", "72", "85"]
+
+load_dotenv()
+
+# Lecture depuis .env — fallback sur Pays de la Loire si non défini
+_raw = os.getenv("DEPARTEMENTS", "44,49,53,72,85")
+
+if _raw.strip().upper() == "ALL":
+    DEPARTEMENTS = (
+        [str(i).zfill(2) for i in range(1, 20)]
+        + ["2A", "2B"]
+        + [str(i) for i in range(21, 96)]
+    )
+else:
+    DEPARTEMENTS = [d.strip() for d in _raw.split(",")]
  
 # Option 2 : Pays de la Loire (~10 min, ~300k mutations)
 # DEPARTEMENTS = ["44", "49", "53", "72", "85"]
