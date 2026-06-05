@@ -12,3 +12,5 @@ export const getCarte    = (params)  => api.get('/api/carte', { params }).then(r
 
 export const getGeoJson       = ()       => api.get('/api/geojson').then(r => r.data)
 export const getCarteCommune  = (params) => api.get('/api/carte/commune', { params }).then(r => r.data)
+
+export const getStatsGlobal = () => api.get('/api/stats/global').then(r => r.data)

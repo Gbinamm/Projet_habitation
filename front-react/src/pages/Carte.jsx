@@ -14,6 +14,7 @@ const inputStyle = {
   background: "#fff", width: "100%",
 }
 const labelStyle = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" }
+
 function Field({ label, children }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 90 }}>
@@ -22,6 +23,7 @@ function Field({ label, children }) {
     </div>
   )
 }
+
 function fmt(n) { return n?.toLocaleString("fr-FR") ?? "—" }
 
 // ─── Gradient prix → couleur ─────────────────────────────────────────────────
@@ -48,6 +50,7 @@ function FicheOffre({ item, onClose }) {
   const dpeColor = DPE_COLORS[item.dpe] ?? "#ccc"
   const good = item.vs_marche != null && item.vs_marche < -5
   const bad  = item.vs_marche != null && item.vs_marche > 10
+
   return (
     <div style={{
       position: "absolute", top: 16, right: 16, zIndex: 1000,
@@ -81,11 +84,12 @@ function FicheOffre({ item, onClose }) {
 
       <hr style={{ border:"none", borderTop:"1px solid #f0f0f0", margin:"10px 0" }} />
 
+      {/* Informations de base */}
       {[
         { label:"Pièces",          value: item.pieces ? `${item.pieces} pièce${item.pieces>1?"s":""}` : null },
         { label:"Surface terrain", value: item.surface_terrain ? `${fmt(item.surface_terrain)} m²` : null },
         { label:"Date",            value: item.date },
-        { label:"Adresse",        value: item.adresse },
+        { label:"Adresse",         value: item.adresse },
       ].filter(r => r.value).map(row => (
         <div key={row.label} style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:6 }}>
           <span style={{ color:"#888" }}>{row.label}</span>
@@ -93,6 +97,24 @@ function FicheOffre({ item, onClose }) {
         </div>
       ))}
 
+      {/* Transports en affichage simple (texte uniquement) */}
+      {(item.arret_plus_proche || item.mode_transport_proche || item.nb_arrets_500m != null) && (
+        <>
+          <hr style={{ border:"none", borderTop:"1px solid #f0f0f0", margin:"10px 0" }} />
+          {[
+            { label: "Arrêt proche", value: item.arret_plus_proche },
+            { label: "Mode de transport", value: item.mode_transport_proche },
+            { label: "Arrêts à 500m", value: item.nb_arrets_500m },
+          ].filter(r => r.value != null).map(row => (
+            <div key={row.label} style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:6 }}>
+              <span style={{ color:"#888" }}>{row.label}</span>
+              <span style={{ fontWeight:500, textAlign:"right", maxWidth:160 }}>{row.value}</span>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* DPE */}
       {item.dpe && (
         <>
           <hr style={{ border:"none", borderTop:"1px solid #f0f0f0", margin:"10px 0" }} />
@@ -100,36 +122,23 @@ function FicheOffre({ item, onClose }) {
             <span style={{ background:dpeColor, color:["A","B","C"].includes(item.dpe)?"#fff":"#222", borderRadius:4, padding:"2px 8px", fontSize:12, fontWeight:700 }}>
               DPE {item.dpe}
             </span>
-            {item.conso_med_kwh_m2 && <span style={{ fontSize:12, color:"#888" }}>⚡ {item.conso_med_kwh_m2} kWh/m²</span>}
+            {item.conso_med_kwh_m2 && <span style={{ fontSize:12, color:"#888" }}>{item.conso_med_kwh_m2} kWh/m²</span>}
           </div>
           {item.pct_passoires != null && (
             <div style={{ fontSize:12, color:"#888", marginBottom:4 }}>
-              🔥 {(item.pct_passoires*100).toFixed(0)}% passoires · ✅ {(item.pct_bons_dpe*100).toFixed(0)}% bons DPE
+              {(item.pct_passoires*100).toFixed(0)}% passoires · {(item.pct_bons_dpe*100).toFixed(0)}% bons DPE
             </div>
           )}
         </>
       )}
 
-      {item.arret_plus_proche && (
-        <>
-          <hr style={{ border:"none", borderTop:"1px solid #f0f0f0", margin:"10px 0" }} />
-          <div style={{ fontSize:13 }}>
-            🚌 <strong>{item.arret_plus_proche}</strong>
-            {item.mode_transport_proche && <span style={{ color:"#888" }}> ({item.mode_transport_proche})</span>}
-          </div>
-          <div style={{ fontSize:12, color:"#888", marginTop:3 }}>
-            {item.reseaux_transport && <span>{item.reseaux_transport} · </span>}
-            {fmt(item.distance_arret_m)} m
-            {item.nb_arrets_500m != null && <span> · {item.nb_arrets_500m} arrêts à 500m</span>}
-          </div>
-        </>
-      )}
-
+      {/* PEB */}
       {item.peb_zone && (
         <>
           <hr style={{ border:"none", borderTop:"1px solid #f0f0f0", margin:"10px 0" }} />
-          <div style={{ background:"#fff3e0", color:"#e65100", borderRadius:6, padding:"6px 10px", fontSize:12, fontWeight:600 }}>
-            ✈️ Zone PEB {item.peb_zone}{item.nom_aeroport ? ` — ${item.nom_aeroport}` : ""}
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:6 }}>
+            <span style={{ color:"#888" }}>Zone PEB</span>
+            <span style={{ fontWeight:500, textAlign:"right", maxWidth:160 }}>{item.peb_zone} {item.nom_aeroport ? `(${item.nom_aeroport})` : ""}</span>
           </div>
         </>
       )}
@@ -155,7 +164,6 @@ function FicheCommune({ props, onClose, onZoom }) {
         { label:"Prix moyen/m²",   value: props.prix_moyen_m2  ? fmt(props.prix_moyen_m2)+" €"  : "—" },
         { label:"Ventes",          value: fmt(props.nb_ventes) },
         { label:"DPE dominant",    value: props.dpe_dominant ?? "—" },
-        { label:"Arrêt médian",    value: props.dist_arret_med ? fmt(props.dist_arret_med)+" m" : "—" },
         { label:"% passoires",     value: props.pct_passoires != null ? props.pct_passoires+"%" : "—" },
       ].map(row => (
         <div key={row.label} style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:6 }}>
@@ -173,7 +181,7 @@ function FicheCommune({ props, onClose, onZoom }) {
           fontWeight:600, cursor:"pointer",
         }}
       >
-        🔍 Voir les offres
+        Voir les offres
       </button>
     </div>
   )

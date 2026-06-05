@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom"
 import Recherche from "./pages/Recherche"
 import Carte     from "./pages/Carte"
 import Chatbot   from "./pages/Chatbot"
+import Stats     from "./pages/Stats"
 
 const navLink = ({ isActive }) => ({
   padding: "5px 14px",
@@ -50,6 +51,7 @@ export default function App() {
         <nav style={{ display: "flex", gap: 4 }}>
           <NavLink to="/"        style={navLink}>Recherche</NavLink>
           <NavLink to="/carte"   style={navLink}>Carte des prix</NavLink>
+          <NavLink to="/stats"   style={navLink}>Analyses</NavLink>
           <NavLink to="/chatbot" style={navLink}>Assistant</NavLink>
         </nav>
 
@@ -67,6 +69,7 @@ export default function App() {
       <Routes>
         <Route path="/"        element={<Recherche />} />
         <Route path="/carte"   element={<Carte />} />
+        <Route path="/stats"   element={<Stats />} />
         <Route path="/chatbot" element={<Chatbot />} />
       </Routes>
     </BrowserRouter>

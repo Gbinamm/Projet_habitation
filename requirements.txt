@@ -27,3 +27,5 @@ plotly                  # graphiques interactifs dans Streamlit
 # --- Hébergement base de données ---
 boto3                   # upload/download vers Cloudflare R2
 tqdm                    # barre de progression téléchargement
+
+docker
