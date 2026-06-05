@@ -60,7 +60,10 @@ export default function Recherche() {
         dpe_max: dpeMax, dist_max: distMax ? Number(distMax) : 0,
         tri, limit: 100,
       }
-      const [bienData, statsData] = await Promise.all([getBiens(params), getStats(commune, annee || 0)])
+      const [bienData, statsData] = await Promise.all([
+        getBiens(params),
+        getStats(commune, annee || 0),
+      ])
       setBiens(bienData); setStats(statsData)
     } catch (e) {
       setError(e?.response?.data?.detail ?? e.message ?? "Erreur réseau")
@@ -95,6 +98,7 @@ export default function Recherche() {
       />
 
       <div style={{ maxWidth:1100, margin:"0 auto", padding:"28px 20px" }}>
+
         {error && (
           <div style={{ background:"#FFF1F0", color:"#DC2626", border:"1px solid #FECACA",
             borderRadius:12, padding:"12px 16px", marginBottom:20, fontSize:13 }}>
@@ -117,7 +121,9 @@ export default function Recherche() {
 
         {searched && biens.length > 0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-            <span style={{ fontSize:13, color:"var(--muted)" }}>{biens.length} résultat{biens.length > 1 ? "s" : ""}</span>
+            <span style={{ fontSize:13, color:"var(--muted)" }}>
+              {biens.length} résultat{biens.length > 1 ? "s" : ""}
+            </span>
             <select value={tri} onChange={e => setTri(e.target.value)} style={{
               fontSize:13, padding:"6px 12px", border:"1.5px solid var(--border)",
               borderRadius:10, background:"var(--surface)", outline:"none",
@@ -133,27 +139,34 @@ export default function Recherche() {
 
         {loading && (
           <div style={{ textAlign:"center", padding:80, color:"var(--muted)" }}>
-            <div style={{ fontSize:28, marginBottom:12 }}>🪺</div>Chargement…
+            <div style={{ fontSize:28, marginBottom:12 }}>🪺</div>
+            Chargement…
           </div>
         )}
+
         {searched && !loading && !error && biens.length === 0 && (
           <div style={{ textAlign:"center", padding:80, color:"var(--muted)" }}>
             <div style={{ fontSize:32, marginBottom:12 }}>🔍</div>
             Aucun résultat — essayez d'élargir les filtres.
           </div>
         )}
+
         {!loading && (
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {biensTries.map((b, i) => <BienCard key={b.id_mutation ?? i} bien={b} />)}
           </div>
         )}
+
         {!searched && !loading && (
           <div style={{ textAlign:"center", padding:100, color:"var(--muted)" }}>
             <div style={{ fontSize:40, marginBottom:16 }}>🪺</div>
-            <div style={{ fontSize:16, fontWeight:600, color:"var(--text)", marginBottom:8 }}>Trouvez votre nid</div>
+            <div style={{ fontSize:16, fontWeight:600, color:"var(--text)", marginBottom:8 }}>
+              Trouvez votre nimbus
+            </div>
             <div style={{ fontSize:13 }}>Choisissez une commune et lancez la recherche</div>
           </div>
         )}
+
       </div>
     </div>
   )
