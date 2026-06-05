@@ -1,31 +1,25 @@
 # ============================================================================
-# Requirements
+# Requirements — Nimbus
 # ============================================================================
- 
+
 # --- Base de données ---
 duckdb                  # base analytique + extension spatial
- 
+
 # --- Données & HTTP ---
 requests                # téléchargement DVF, PEB, GTFS, DPE
+httpx                   # requêtes async (endpoint /api/geojson → geo.api.gouv.fr)
 pandas                  # manipulation dataframes
 geopandas               # jointures spatiales (PEB, transport)
 shapely                 # géométries (points, polygones)
 pyproj                  # reprojection Lambert 93 pour distances en mètres
- 
+
 # --- Chatbot IA ---
 groq                    # SDK Groq (LLM en ligne, gratuit)
 python-dotenv           # lecture du fichier .env (clé API)
- 
+
 # --- Backend API ---
 fastapi                 # API REST pour le frontend React
 uvicorn[standard]       # serveur ASGI pour FastAPI
- 
-# --- Frontend test (Streamlit) ---
-streamlit               # interface chatbot de test (app.py)
-plotly                  # graphiques interactifs dans Streamlit
- 
-# --- Hébergement base de données ---
-boto3                   # upload/download vers Cloudflare R2
-tqdm                    # barre de progression téléchargement
 
-docker
+# --- Utilitaires ---
+tqdm                    # barre de progression téléchargement

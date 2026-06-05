@@ -1,8 +1,8 @@
-# ImmoBI — Analyse du marché immobilier français
+# Nimbus 🪺 — Analyse du marché immobilier breton
 
 > **Question centrale : pour un prix, une localisation et des caractéristiques données — est-ce un bon deal ?**
 
-Outil de Business Intelligence immobilier basé sur les données publiques françaises (DVF, DPE, PEB, transport). Interface React + API FastAPI + base DuckDB.
+Outil de Business Intelligence immobilier basé sur les données publiques françaises (DVF, DPE, PEB, transport). Interface React + API FastAPI + base DuckDB. Couvre les départements 22, 29, 35, 44 et 56.
 
 ---
 
@@ -14,7 +14,7 @@ Outil de Business Intelligence immobilier basé sur les données publiques fran�
 
 ---
 
-## Installation en 3 étapes
+## Installation
 
 ### 1. Cloner le repo
 
@@ -26,13 +26,13 @@ cd Projet_habitation
 ### 2. Backend Python
 
 ```bash
-# Créer et activer l'environnement virtuel
 python -m venv venv
-source venv/Scripts/activate   # Windows Git Bash
-# ou
-source venv/bin/activate       # Mac / Linux
 
-# Installer les dépendances
+# Windows
+venv\Scripts\activate
+# Mac / Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
@@ -40,7 +40,6 @@ Créer le fichier `.env` à la racine :
 ```
 GROQ_API_KEY=votre_clé_groq
 ```
-
 > Clé gratuite sur [console.groq.com](https://console.groq.com)
 
 ### 3. Frontend React
@@ -59,42 +58,63 @@ Deux terminaux en parallèle :
 **Terminal 1 — Backend**
 ```bash
 cd back
-source ../venv/Scripts/activate
 uvicorn main:app --reload
 ```
-→ API disponible sur `http://localhost:8000`
-→ Documentation interactive : `http://localhost:8000/docs`
+→ API : `http://localhost:8000`
+→ Docs : `http://localhost:8000/docs`
 
 **Terminal 2 — Frontend**
 ```bash
 cd front-react
 npm run dev
 ```
-→ Interface disponible sur `http://localhost:5173`
+→ Interface : `http://localhost:5173`
+
+---
+
+## Lancer avec Docker
+
+```bash
+# Premier lancement (build + démarrage)
+docker compose up --build
+
+# Lancement normal
+docker compose up
+
+# En arrière-plan
+docker compose up -d
+
+# Arrêter
+docker compose down
+
+# Logs en temps réel
+docker compose logs -f backend
+```
+
+→ Frontend : `http://localhost`
+→ Backend : `http://localhost:8000`
 
 ---
 
 ## Alimenter la base de données
 
-La base `immo_et_bruit.duckdb` n'est pas versionnée (données volumineuses). Pour la générer :
+La base `immo_et_bruit.duckdb` n'est pas versionnée. Pour la générer :
 
 ```bash
-source venv/Scripts/activate
-
-# 1. Données DVF + DPE + PEB
+# 1. Données DVF + PEB
 python integration_des_donnees.py
 
 # 2. Données DPE
 python integration_dpe.py
 
-# 3. Données transport en commun
+# 3. Données transport (GTFS)
 python integration_transport.py
 
-# 4. Jointure transport
+# 4. Jointure spatiale transport ↔ DVF
 python jointure_transport.py
 ```
 
-> ⚠️ Sans la base, l'app tourne en **mode démonstration** avec des données fictives générées automatiquement. Tout fonctionne, les chiffres ne sont pas réels.
+> ⚠️ Sans la base, l'app tourne en **mode démonstration** avec des données fictives. Tout fonctionne, les chiffres ne sont pas réels.
 
 ---
 
@@ -102,60 +122,62 @@ python jointure_transport.py
 
 ```
 Projet_habitation/
-├── back/                        # API FastAPI
-│   ├── main.py                  # Endpoints données + chatbot
-│   ├── agent.py                 # Logique chatbot (Groq LLM)
-│   ├── tools.py                 # Outils DuckDB exposés au LLM
+├── back/                          # API FastAPI
+│   ├── main.py                    # Endpoints données + chatbot + GeoJSON
+│   ├── agent.py                   # Logique chatbot (Groq LLM)
+│   ├── tools.py                   # 8 outils DuckDB exposés au LLM
 │   └── core/
-│       └── recup_donnees.py     # Connexion DuckDB
+│       └── recup_donnees.py       # Connexion DuckDB + mock données
 │
-├── front-react/                 # Interface React (Vite)
+├── front-react/                   # Interface React (Vite)
 │   └── src/
 │       ├── pages/
-│       │   ├── Recherche.jsx    # Recherche de biens
-│       │   ├── Carte.jsx        # Carte des prix au m²
-│       │   └── Chatbot.jsx      # Assistant immobilier
+│       │   ├── Recherche.jsx      # Recherche filtrée de biens
+│       │   ├── Carte.jsx          # Carte choroplèthe + zoom offres
+│       │   ├── Stats.jsx          # Analyses du marché (SVG natif)
+│       │   └── Chatbot.jsx        # Assistant immobilier Nimbus
 │       ├── components/
-│       │   ├── FilterBar.jsx    # Barre de filtres sticky
-│       │   └── BienCard.jsx     # Carte d'un bien
-│       ├── api/
-│       │   └── client.js        # Appels API
-│       └── hooks/
-│           └── useScrollDirection.js
+│       │   ├── FilterBar.jsx      # Filtres avec combobox commune
+│       │   └── BienCard.jsx       # Carte d'une offre
+│       └── api/
+│           └── client.js          # Appels API axios
 │
-├── data_public/                 # Données publiques légères versionnées
-├── integration_des_donnees.py   # Pipeline DVF + DPE + PEB
-├── integration_dpe.py           # Pipeline DPE
-├── integration_transport.py     # Pipeline transport (PAN GTFS)
-├── jointure_transport.py        # Jointure spatiale transport ↔ DVF
+├── integration_des_donnees.py     # Pipeline DVF + PEB
+├── integration_dpe.py             # Pipeline DPE (ADEME)
+├── integration_transport.py       # Pipeline transport (GTFS)
+├── jointure_transport.py          # Jointure spatiale transport ↔ DVF
+├── Dockerfile.backend
+├── Dockerfile.frontend
+├── docker-compose.yml
 ├── requirements.txt
-└── .env                         # ← à créer localement (non versionné)
+└── .env                           # ← à créer (non versionné)
 ```
 
 ---
 
-## Problèmes fréquents
+## Pages de l'application
 
-**`ModuleNotFoundError: No module named 'xxx'`**
-```bash
-source venv/Scripts/activate
-pip install -r requirements.txt
-```
+| Page | Description |
+|---|---|
+| **Recherche** | Filtres multicritères (commune, type, surface, prix, DPE, transport), métriques de marché, tri des résultats |
+| **Carte des prix** | Choroplèthe par commune → clic → zoom + points individuels par offre |
+| **Analyses** | Évolution des prix, effet transport, zones PEB, DPE vs prix, top/flop communes |
+| **Assistant** | Chatbot Groq branché sur la base DuckDB, 8 outils (prix, recherche, évaluation, comparaison...) |
 
-**`Cannot open database ... does not exist`**
-La base DuckDB n'existe pas encore — lancer les scripts d'intégration ou laisser le mode démo se déclencher automatiquement.
+---
 
-**`GROQ_API_KEY not found`**
-Le fichier `.env` est absent ou mal placé. Il doit être à la racine de `Projet_habitation/`, pas dans `back/`.
+## Endpoints API principaux
 
-**Port 8000 déjà utilisé**
-```bash
-uvicorn main:app --reload --port 8001
-```
-Et mettre à jour `src/api/client.js` : `baseURL: 'http://localhost:8001'`
-
-**`npm run dev` — `command not found`**
-Node.js n'est pas installé ou pas dans le PATH. Télécharger sur [nodejs.org](https://nodejs.org) (version LTS).
+| Endpoint | Description |
+|---|---|
+| `GET /api/communes` | Liste des communes |
+| `GET /api/annees` | Années disponibles |
+| `GET /api/biens` | Offres filtrées |
+| `GET /api/stats` | Stats agrégées d'une commune |
+| `GET /api/carte/commune` | Points individuels d'une commune |
+| `GET /api/geojson` | Contours GeoJSON enrichis (mis en cache) |
+| `GET /api/stats/global` | Données agrégées page Analyses |
+| `POST /chat` | Chatbot |
 
 ---
 
@@ -165,7 +187,36 @@ Node.js n'est pas installé ou pas dans le PATH. Télécharger sur [nodejs.org](
 |---|---|
 | Base de données | DuckDB |
 | API | FastAPI + Uvicorn |
+| Requêtes async | httpx |
 | LLM Chatbot | Groq (llama-3.3-70b) |
-| Frontend | React 18 + Vite |
+| Frontend | React 19 + Vite |
 | Cartes | Leaflet + react-leaflet |
-| Données | DVF Etalab, DPE ADEME, PEB GéoRisques, GTFS PAN |
+| Graphiques | SVG natif (zéro dépendance) |
+| Données | DVF Etalab · DPE ADEME · PEB GéoRisques · GTFS PAN |
+
+---
+
+## Problèmes fréquents
+
+**`ModuleNotFoundError`**
+```bash
+pip install -r requirements.txt
+```
+
+**`Cannot open database`**
+La base DuckDB n'existe pas — lancer les scripts d'intégration ou laisser le mode démo se déclencher.
+
+**`GROQ_API_KEY not found`**
+Le `.env` doit être à la racine de `Projet_habitation/`, pas dans `back/`.
+
+**Port 8000 déjà utilisé**
+```bash
+uvicorn main:app --reload --port 8001
+```
+Mettre à jour `src/api/client.js` : `baseURL: 'http://localhost:8001'`
+
+**White screen sur la page Analyses**
+Ne pas installer Recharts (conflit React 19). La page utilise du SVG natif, aucune dépendance supplémentaire nécessaire.
+
+**Carte sans couleurs (polygones gris)**
+Le backend doit pouvoir contacter `geo.api.gouv.fr` au premier appel sur `/api/geojson`. Vérifier la connexion internet. Les logs backend affichent `[geojson] Jointure : X/Y communes enrichies`.
