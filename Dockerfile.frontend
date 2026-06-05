@@ -1,6 +1,6 @@
 # ============================================================================
 # Dockerfile.frontend
-# Build React puis sert via nginx
+# Build React (Vite) puis sert via nginx
 # ============================================================================
 
 # Stage 1 — build
@@ -15,7 +15,7 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Nécessaire pour React Router (SPA)
+# Config nginx pour React Router (SPA)
 RUN printf 'server {\n\
   listen 80;\n\
   location / {\n\

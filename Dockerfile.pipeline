@@ -1,0 +1,31 @@
+# ============================================================================
+# Dockerfile.pipeline
+# Lance les scripts d'ingestion de données (one-shot)
+#
+# Usage :
+#   docker compose --profile pipeline run --rm pipeline
+# ============================================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libgdal-dev libgeos-dev libproj-dev gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Scripts d'ingestion à la racine du projet
+COPY integration_des_donnees.py .
+COPY integration_transport.py .
+COPY integration_dpe.py .
+COPY jointure_transport.py .
+
+CMD ["sh", "-c", "\
+    echo '🚀 Démarrage pipeline...' && \
+    python integration_des_donnees.py && \
+    python integration_transport.py && \
+    python integration_dpe.py && \
+    python jointure_transport.py && \
+    echo '✅ Pipeline terminée'"]
